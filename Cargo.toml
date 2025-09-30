@@ -43,7 +43,7 @@ futures = "0.3"
 
 chacha20poly1305 = { version = "0.10", features = ["std"] }
 tracing = { version = "0.1", features = ["attributes"] }
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt", "json"] }
 tracing-appender = "0.2"
 tracing-futures = "0.2"
 
@@ -69,7 +69,7 @@ toml = "0.8"
 # TLS dependencies
 rustls = { version = "0.21", features = ["dangerous_configuration"] }
 tokio-rustls = "0.24"
-rcgen = "0.11"
+rcgen = "0.14.5"
 rustls-pemfile = "1.0"
 rustls-native-certs = "0.6"
 

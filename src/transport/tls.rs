@@ -100,18 +100,18 @@ impl TlsServerConfig {
     
     /// Generate a self-signed certificate for development/testing purposes
     pub fn generate_self_signed<P: AsRef<Path>>(cert_path: P, key_path: P) -> io::Result<Self> {
-        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])
+        let certified_key = rcgen::generate_simple_self_signed(vec!["localhost".into()])
             .map_err(|e| io::Error::other(format!("Certificate generation error: {e}")))?;
         
         // Write certificate
         let mut cert_file = File::create(&cert_path)?;
-        let pem = cert.serialize_pem()
-            .map_err(|e| io::Error::other(format!("Certificate serialization error: {e}")))?;
+        let pem = certified_key.cert.pem();
         cert_file.write_all(pem.as_bytes())?;
         
         // Write private key
         let mut key_file = File::create(&key_path)?;
-        key_file.write_all(cert.serialize_private_key_pem().as_bytes())?;
+        let key_pem = certified_key.signing_key.serialize_pem();
+        key_file.write_all(key_pem.as_bytes())?;
         
         Ok(Self {
             cert_path: cert_path.as_ref().to_string_lossy().to_string(),
