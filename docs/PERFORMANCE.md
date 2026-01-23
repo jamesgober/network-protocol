@@ -23,6 +23,36 @@
 | Memory Per Connection | 4.2KB | 30% less than gRPC | 18% vs v0.9.8 |
 | CPU Usage (single core) | 2.1% at 1000 msg/sec | 25% less than raw TCP | 5% vs v0.9.8 |
 
+## Microbenchmarks (Criterion)
+
+The following microbenchmarks were collected on macOS with `cargo bench`.
+
+### Packet Encode/Decode
+- Encode throughput: up to 1.89 GiB/s at 1 MiB payloads
+- Decode throughput: up to 24.5 GiB/s at 1 MiB payloads
+
+### Compression
+- LZ4 compress: ~0.9–1.0 GiB/s at 1 MiB
+- LZ4 decompress: ~18–19 GiB/s at 1 MiB
+- Zstd compress (level 1): ~0.9–1.0 GiB/s at 1 MiB
+- Zstd decompress: ~0.37–0.42 GiB/s at 1 MiB
+
+Interpretation:
+- LZ4 is preferred for low-latency and high-throughput paths, especially for small/medium payloads.
+- Zstd yields better compression ratios but with much slower decompression; use for archival or bandwidth-constrained links.
+
+## Stress & Concurrency Results
+
+- Encode/decode stress (10k iterations across sizes up to 1 MiB) passes in ~1.2s without panics.
+- Concurrent async stress (8 threads, 50k iterations per size) passes reliably, demonstrating thread-safety in codec and packet paths.
+
+## Operational Recommendations
+
+- Prefer `LZ4` for message compression under 256 KiB for best tail latency.
+- Consider `Zstd` for large, highly compressible payloads when bandwidth dominates cost.
+- Set a compression threshold (e.g., 256–512 bytes) to bypass compression for tiny payloads to avoid overhead.
+- Enable release flags with `codegen-units=1` and `lto=true` for maximum efficiency in production.
+
 <br>
 
 ### Light Load (100 concurrent connections)

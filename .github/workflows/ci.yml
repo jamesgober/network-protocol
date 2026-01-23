@@ -7,6 +7,17 @@ on:
     branches: [ main ]
 
 jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
   build-test:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -50,3 +61,54 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --no-deps
+
+  security-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Security audit
+        run: cargo audit
+
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny
+
+      - name: Check advisories, licenses, and sources
+        run: cargo deny check
+
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+
+      - name: Build fuzz targets
+        run: cargo +nightly fuzz build
+
+      - name: Fuzz smoke tests (packet)
+        run: cargo +nightly fuzz run fuzz_target_1 -- -max_total_time=30
+
+      - name: Fuzz smoke tests (handshake)
+        run: cargo +nightly fuzz run fuzz_handshake -- -max_total_time=30
+
+      - name: Fuzz smoke tests (compression)
+        run: cargo +nightly fuzz run fuzz_compression -- -max_total_time=30

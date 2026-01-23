@@ -1,18 +1,16 @@
+use network_protocol::protocol::message::Message;
 use network_protocol::service::client::Client;
 use network_protocol::service::daemon;
-use network_protocol::protocol::message::Message;
-use network_protocol::protocol::handshake;
-use tokio::time::{sleep, Duration};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
+use tokio::time::{sleep, Duration};
 
 use std::error::Error;
 
 #[tokio::test]
 async fn test_secure_handshake_and_messages() -> Result<(), Box<dyn Error>> {
-    // Clear any previous handshake state
-    handshake::clear_handshake_data().unwrap();
-    
+    // No need to clear handshake state anymore (per-session design)
+
     // Bind to port 0 to get a random available port
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?.to_string();
@@ -20,7 +18,7 @@ async fn test_secure_handshake_and_messages() -> Result<(), Box<dyn Error>> {
 
     // Clone the address for the server task
     let server_addr = addr.clone();
-    
+
     // Create shutdown channel for test cleanup
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
@@ -46,19 +44,22 @@ async fn test_secure_handshake_and_messages() -> Result<(), Box<dyn Error>> {
     if let Err(e) = client.send(Message::Ping).await {
         panic!("Failed to send ping: {e}");
     }
-        
+
     let response = match client.recv().await {
         Ok(resp) => resp,
         Err(e) => panic!("No pong received: {e}"),
     };
-    assert!(matches!(response, Message::Pong), "Expected Pong, got {response:?}");
+    assert!(
+        matches!(response, Message::Pong),
+        "Expected Pong, got {response:?}"
+    );
 
     // --- Test Echo ---
     let echo_msg = "Secure echo test!".to_string();
     if let Err(e) = client.send(Message::Echo(echo_msg.clone())).await {
         panic!("Failed to send echo: {e}");
     }
-        
+
     let response = match client.recv().await {
         Ok(resp) => resp,
         Err(e) => panic!("No echo received: {e}"),
@@ -72,10 +73,10 @@ async fn test_secure_handshake_and_messages() -> Result<(), Box<dyn Error>> {
     if let Err(e) = client.send(Message::Disconnect).await {
         panic!("Failed to disconnect: {e}");
     }
-    
+
     // Clean shutdown of the server
     let _ = shutdown_tx.send(());
     let _ = server_handle.await;
-        
+
     Ok(())
 }

@@ -1,5 +1,5 @@
 //! # Remote Transport Layer
-//! 
+//!
 //! This file is part of the Network Protocol project.
 //!
 //! It defines the remote transport layer for network communication,
@@ -7,31 +7,31 @@
 //!
 //! The remote transport layer is responsible for handling the actual data transmission
 //! between nodes in a network, ensuring that packets are sent and received correctly.
-//! 
+//!
 //! It abstracts the underlying network details,
 //! allowing higher-level protocol logic to focus on message routing and processing.
-//! 
+//!
 //! The remote transport layer is designed to be modular and extensible,
 //! supporting various transport mechanisms such as TCP, UDP, and custom protocols.
-//! 
+//!
 //! ## Responsibilities
 //! - Send and receive packets over the network
 //! - Handle connection management
 //! - Provide a unified interface for different transport protocols
-//! 
+//!
 //! This module is essential for processing protocol packets in a networked environment,
 //! ensuring correct parsing and serialization.
-//! 
+//!
 //! It is designed to be efficient, minimal, and easy to integrate into the protocol layer.
-use tokio::net::{TcpListener, TcpStream};
-use tokio_util::codec::Framed;
 use crate::core::codec::PacketCodec;
 use crate::core::packet::Packet;
 use crate::error::Result;
-use futures::StreamExt;
 use futures::SinkExt;
+use futures::StreamExt;
 use std::net::SocketAddr;
-use tracing::{info, error, debug, instrument};
+use tokio::net::{TcpListener, TcpStream};
+use tokio_util::codec::Framed;
+use tracing::{debug, error, info, instrument};
 
 /// Starts a TCP server at the given address
 #[instrument(skip(addr), fields(address = %addr))]

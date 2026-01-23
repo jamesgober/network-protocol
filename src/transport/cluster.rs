@@ -3,11 +3,11 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tokio::select;
 use tokio::sync::mpsc;
-use tokio::time::{sleep, interval};
-use tracing::{info, warn, debug, instrument};
+use tokio::time::{interval, sleep};
+use tracing::{debug, info, instrument, warn};
 
-use crate::service::client::Client;
 use crate::protocol::message::Message;
+use crate::service::client::Client;
 //use crate::error::Result;
 
 #[derive(Debug, Clone)]
@@ -24,13 +24,23 @@ pub struct Cluster {
 
 impl Cluster {
     pub fn new(peers: Vec<(String, String)>) -> Self {
-        let peers = peers.into_iter().map(|(id, addr)| {
-            (id.clone(), ClusterNode { id, addr, last_seen: None })
-        }).collect();
+        let peers = peers
+            .into_iter()
+            .map(|(id, addr)| {
+                (
+                    id.clone(),
+                    ClusterNode {
+                        id,
+                        addr,
+                        last_seen: None,
+                    },
+                )
+            })
+            .collect();
 
-        Self { 
+        Self {
             peers,
-            shutdown_tx: None
+            shutdown_tx: None,
         }
     }
 
@@ -38,17 +48,17 @@ impl Cluster {
     pub async fn start_heartbeat(&mut self, heartbeat_interval: Duration) -> mpsc::Sender<()> {
         // Create shutdown channel
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
-        
+
         // Clone necessary data for the heartbeat task
         let peers = self.peers.clone();
-        
+
         // Store the sender for shutdown
         self.shutdown_tx = Some(shutdown_tx.clone());
-        
+
         // Spawn the heartbeat task
         tokio::spawn(async move {
             let mut interval_timer = interval(heartbeat_interval);
-            
+
             loop {
                 select! {
                     // Check for shutdown signal
@@ -56,7 +66,7 @@ impl Cluster {
                         info!("Received shutdown signal, stopping heartbeat");
                         break;
                     }
-                    
+
                     // Run heartbeat on interval
                     _ = interval_timer.tick() => {
                         for (id, node) in peers.iter() {
@@ -79,10 +89,10 @@ impl Cluster {
                     }
                 }
             }
-            
+
             info!("Heartbeat task shut down gracefully");
         });
-        
+
         // Return the shutdown sender so the caller can trigger shutdown
         shutdown_tx
     }
@@ -90,7 +100,7 @@ impl Cluster {
     pub fn get_peers(&self) -> Vec<&ClusterNode> {
         self.peers.values().collect()
     }
-    
+
     /// Gracefully shut down the cluster's heartbeat task
     #[instrument(skip(self))]
     pub async fn shutdown(&mut self) {

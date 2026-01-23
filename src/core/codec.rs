@@ -19,10 +19,10 @@
 //! It is designed to be efficient, minimal, and easy to integrate into the protocol layer.
 //!
 
-use tokio_util::codec::{Decoder, Encoder};
-use bytes::{BytesMut, BufMut};
 use crate::core::packet::{Packet, HEADER_SIZE};
-use crate::error::{Result, ProtocolError};
+use crate::error::{ProtocolError, Result};
+use bytes::{BufMut, BytesMut};
+use tokio_util::codec::{Decoder, Encoder};
 //use futures::StreamExt;
 
 pub struct PacketCodec;
@@ -34,7 +34,7 @@ impl Decoder for PacketCodec {
     /// Decodes a packet from the byte stream
     ///
     /// Returns `None` if there aren't enough bytes to form a complete packet.
-    /// 
+    ///
     /// # Errors
     /// Returns `ProtocolError::InvalidPacket` if the packet data is malformed
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Packet>> {
@@ -58,7 +58,7 @@ impl Encoder<Packet> for PacketCodec {
     type Error = ProtocolError;
 
     /// Encodes a packet into the byte stream
-    /// 
+    ///
     /// # Errors
     /// This method should never fail under normal conditions, but may return protocol errors
     /// if there are internal serialization issues
@@ -66,15 +66,15 @@ impl Encoder<Packet> for PacketCodec {
         // Calculate total size and reserve space in the buffer
         let total_size = HEADER_SIZE + packet.payload.len();
         dst.reserve(total_size);
-        
+
         // Write header directly to buffer: magic bytes + version + length
         dst.put_slice(&crate::config::MAGIC_BYTES);
         dst.put_u8(crate::config::PROTOCOL_VERSION);
         dst.put_u32(packet.payload.len() as u32);
-        
+
         // Write payload directly to buffer
         dst.put_slice(&packet.payload);
-        
+
         Ok(())
     }
 }

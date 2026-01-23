@@ -19,7 +19,7 @@
 //!
 //! The design is optimized for performance and integration with the rest
 //! of the protocol layer.
-use crate::config::{MAGIC_BYTES, PROTOCOL_VERSION, MAX_PAYLOAD_SIZE};
+use crate::config::{MAGIC_BYTES, MAX_PAYLOAD_SIZE, PROTOCOL_VERSION};
 use crate::error::{ProtocolError, Result};
 
 /// Total size of the fixed-length header
@@ -61,7 +61,8 @@ impl Packet {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(HEADER_SIZE + self.payload.len());
         out.extend_from_slice(&MAGIC_BYTES);
-        out.push(PROTOCOL_VERSION);
+        // Write the actual packet version from the struct, not the protocol constant
+        out.push(self.version);
         out.extend_from_slice(&(self.payload.len() as u32).to_be_bytes());
         out.extend_from_slice(&self.payload);
         out

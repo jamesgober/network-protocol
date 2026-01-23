@@ -1,5 +1,5 @@
 //! # Error
-//! 
+//!
 //! This file is part of the Network Protocol project.
 //!
 //! It defines the error types used throughout the protocol layer.
@@ -41,9 +41,9 @@
 //! }
 //! ```
 
-use thiserror::Error;
+use serde::{Deserialize, Serialize};
 use std::io;
-use serde::{Serialize, Deserialize};
+use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, ProtocolError>;
 
@@ -56,19 +56,19 @@ pub enum ProtocolError {
     #[error("Serialization error: {0}")]
     #[serde(skip_serializing, skip_deserializing)]
     Serialization(#[from] bincode::Error),
-    
+
     #[error("Serialize error: {0}")]
     SerializeError(String),
-    
+
     #[error("Deserialize error: {0}")]
     DeserializeError(String),
-    
+
     #[error("Transport error: {0}")]
     TransportError(String),
-    
+
     #[error("Connection closed")]
     ConnectionClosed,
-    
+
     #[error("Security error: {0}")]
     SecurityError(String),
 
@@ -101,13 +101,13 @@ pub enum ProtocolError {
 
     #[error("Timeout occurred")]
     Timeout,
-    
+
     #[error("Connection timed out (no activity)")]
     ConnectionTimeout,
 
     #[error("Configuration error: {0}")]
     ConfigError(String),
-    
+
     #[error("Custom error: {0}")]
     Custom(String),
 

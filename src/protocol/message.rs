@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[repr(u8)]
@@ -16,7 +16,7 @@ pub enum Message {
         /// Random nonce for additional security
         nonce: [u8; 16],
     },
-    
+
     /// Server responds with its public key and a signature
     SecureHandshakeResponse {
         /// Server's public key for ECDH exchange
@@ -26,7 +26,7 @@ pub enum Message {
         /// Hash of the client's nonce to prove receipt
         nonce_verification: [u8; 32],
     },
-    
+
     /// Final handshake confirmation from client
     SecureHandshakeConfirm {
         /// Hash of server's nonce to prove receipt
@@ -36,7 +36,7 @@ pub enum Message {
     // Placeholder for custom commands:
     Echo(String),
     Disconnect,
-    
+
     // Custom command with payload for testing and extensibility
     Custom {
         command: String,

@@ -1,5 +1,5 @@
+use crate::error::{ProtocolError, Result};
 use crate::protocol::message::Message;
-use crate::error::{Result, ProtocolError};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -30,17 +30,23 @@ impl Dispatcher {
             Ok(mut handlers) => {
                 handlers.insert(opcode.to_string(), Box::new(handler));
                 Ok(())
-            },
-            Err(_) => Err(ProtocolError::Custom("Failed to acquire write lock on dispatcher handlers".to_string())),
+            }
+            Err(_) => Err(ProtocolError::Custom(
+                "Failed to acquire write lock on dispatcher handlers".to_string(),
+            )),
         }
     }
 
     pub fn dispatch(&self, msg: &Message) -> Result<Message> {
         let opcode = get_opcode(msg);
-        
+
         let handlers = match self.handlers.read() {
             Ok(handlers) => handlers,
-            Err(_) => return Err(ProtocolError::Custom("Failed to acquire read lock on dispatcher handlers".to_string())),
+            Err(_) => {
+                return Err(ProtocolError::Custom(
+                    "Failed to acquire read lock on dispatcher handlers".to_string(),
+                ))
+            }
         };
 
         match handlers.get(&opcode) {

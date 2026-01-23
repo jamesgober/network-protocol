@@ -52,12 +52,13 @@
 - Ready for *microservices*, *databases*, *daemons*, and *system protocols*
 
 <hr>
-<p align="center">
-    &mdash; Part of the <a href="https://github.com/jamesgober/rust-performance-library"><strong>Rust Performance Library</strong></a> collection. &mdash;
-</p>
-<hr>
-<br>
 
+<p>
+    <b>REPS</b> (<i>Rust Efficiency &amp; Performance Standards</i>)
+    <br>⚡ <a href="https://github.com/jamesgober/rust-performance-collection"><strong>Rust Performance Collection</strong></a>
+</p>
+
+<br>
 
 
 ## Installation
@@ -280,6 +281,48 @@ You can extend this list with your own enums or handlers.
 
 <br>
 
+## Benchmarks
+
+Run microbenchmarks (Criterion):
+
+```bash
+cargo bench
+```
+
+Highlights:
+- Packet encode: up to ~1.9 GiB/s, decode up to ~24.5 GiB/s
+- LZ4: compress ~1.0 GiB/s, decompress ~18–19 GiB/s @ 1 MiB
+- Zstd (level 1): compress ~1.0 GiB/s, decompress ~0.4 GiB/s @ 1 MiB
+- Compression threshold: default 512 bytes (configurable) to skip compression on tiny payloads
+
+See detailed results and recommendations in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+
+## Testing
+
+Full test suite:
+```bash
+cargo test --all --all-features
+```
+
+Fuzz smoke tests (nightly):
+```bash
+rustup install nightly
+cargo install cargo-fuzz
+cargo +nightly fuzz build
+cargo +nightly fuzz run fuzz_target_1 -- -max_total_time=30
+cargo +nightly fuzz run fuzz_handshake -- -max_total_time=30
+cargo +nightly fuzz run fuzz_compression -- -max_total_time=30
+```
+
+Stress tests:
+```bash
+cargo test --test stress -- --nocapture
+cargo test --test concurrency -- --nocapture
+```
+
+Production build profile (already configured): LTO, codegen-units=1, opt-level=3, stripped symbols. Run with `cargo build --release`.
+
+
 ### Custom Message Handlers
 Register your own handlers with the dispatcher to process different message types:
 
@@ -382,12 +425,24 @@ src/
 [Principles](./docs/PRINCIPLES.md)
 
 
-<br>
+<hr><br>
+
+<!--
+:: CONTRIBUTORS
+=========================== -->
+<div id="contributors">
+    <h2>❤️ Contributors</h2>
+    <h3><sup>Pending</sup></h3>
+    <br>
+</div>
+
+
+
 <!--
 :: LICENSE
-============================================================================ -->
+=========================== -->
 <div id="license">
-    <hr>
+    <hr><br>
     <h2>⚖️ License</h2>
     <p>Licensed under the <b>Apache License</b>, version 2.0 (the <b>"License"</b>); you may not use this software, including, but not limited to the source code, media files, ideas, techniques, or any other associated property or concept belonging to, associated with, or otherwise packaged with this software except in compliance with the <b>License</b>.</p>
     <p>You may obtain a copy of the <b>License</b> at: <a href="http://www.apache.org/licenses/LICENSE-2.0" title="Apache-2.0 License" target="_blank">http://www.apache.org/licenses/LICENSE-2.0</a>.</p>
@@ -397,12 +452,11 @@ src/
 </div>
 
 
-
 <!--
 :: COPYRIGHT
-============================================================================ -->
+=========================== -->
 <div align="center">
-  <br>
+
   <h2></h2>
   <sup>COPYRIGHT <small>&copy;</small> 2025 <strong>JAMES GOBER.</strong></sup>
 </div>

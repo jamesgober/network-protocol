@@ -1,8 +1,8 @@
-use std::time::{Instant, Duration};
 use crate::protocol::heartbeat::{build_ping, is_pong};
 use crate::protocol::message::Message;
 use crate::utils::timeout::KEEPALIVE_INTERVAL;
-use tracing::{debug, warn, instrument};
+use std::time::{Duration, Instant};
+use tracing::{debug, instrument, warn};
 
 /// Keep-alive manager to maintain active connections and detect dead peers
 #[derive(Debug)]
@@ -52,7 +52,7 @@ impl KeepAliveManager {
     pub fn should_ping(&self) -> bool {
         self.last_send.elapsed() >= self.ping_interval
     }
-    
+
     /// Get the ping interval duration
     pub fn ping_interval(&self) -> Duration {
         self.ping_interval
@@ -80,14 +80,14 @@ impl KeepAliveManager {
     #[instrument(skip(msg))]
     pub fn process_message(&mut self, msg: &Message) -> bool {
         let is_pong_msg = is_pong(msg);
-        
+
         // Update last received time for any message (including pong)
         self.update_recv();
-        
+
         if is_pong_msg {
             debug!("Received pong message");
         }
-        
+
         is_pong_msg
     }
 }

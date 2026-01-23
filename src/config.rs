@@ -1,11 +1,11 @@
+use crate::error::{ProtocolError, Result};
+use crate::utils::timeout;
+use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
-use serde::{Deserialize, Serialize};
 use tracing::Level;
-use crate::error::{Result, ProtocolError};
-use crate::utils::timeout;
 
 /// Current supported protocol version
 pub const PROTOCOL_VERSION: u8 = 1;
@@ -28,15 +28,15 @@ pub struct NetworkConfig {
     /// Server-specific configuration
     #[serde(default)]
     pub server: ServerConfig,
-    
+
     /// Client-specific configuration
     #[serde(default)]
     pub client: ClientConfig,
-    
+
     /// Transport configuration
     #[serde(default)]
     pub transport: TransportConfig,
-    
+
     /// Logging configuration
     #[serde(default)]
     pub logging: LoggingConfig,
@@ -49,75 +49,78 @@ impl NetworkConfig {
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let mut file = File::open(path)
             .map_err(|e| ProtocolError::ConfigError(format!("Failed to open config file: {e}")))?;
-        
+
         let mut contents = String::new();
         file.read_to_string(&mut contents)
             .map_err(|e| ProtocolError::ConfigError(format!("Failed to read config file: {e}")))?;
-        
+
         Self::from_toml(&contents)
     }
-    
+
     /// Load configuration from TOML string
     pub fn from_toml(content: &str) -> Result<Self> {
         toml::from_str::<Self>(content)
             .map_err(|e| ProtocolError::ConfigError(format!("Failed to parse TOML: {e}")))
     }
-    
+
     /// Load configuration from environment variables
     pub fn from_env() -> Result<Self> {
         // Start with defaults
         let mut config = Self::default();
-        
+
         // Override with environment variables
         if let Ok(addr) = std::env::var("NETWORK_PROTOCOL_SERVER_ADDRESS") {
             config.server.address = addr;
         }
-        
+
         if let Ok(capacity) = std::env::var("NETWORK_PROTOCOL_BACKPRESSURE_LIMIT") {
             if let Ok(val) = capacity.parse::<usize>() {
                 config.server.backpressure_limit = val;
             }
         }
-        
+
         if let Ok(timeout) = std::env::var("NETWORK_PROTOCOL_CONNECTION_TIMEOUT_MS") {
             if let Ok(val) = timeout.parse::<u64>() {
                 config.server.connection_timeout = Duration::from_millis(val);
                 config.client.connection_timeout = Duration::from_millis(val);
             }
         }
-        
+
         if let Ok(heartbeat) = std::env::var("NETWORK_PROTOCOL_HEARTBEAT_INTERVAL_MS") {
             if let Ok(val) = heartbeat.parse::<u64>() {
                 config.server.heartbeat_interval = Duration::from_millis(val);
             }
         }
-        
+
         // Add more environment variables as needed
-        
+
         Ok(config)
     }
-    
+
     /// Apply overrides to the default configuration
-    pub fn default_with_overrides<F>(mutator: F) -> Self 
-    where F: FnOnce(&mut Self) {
+    pub fn default_with_overrides<F>(mutator: F) -> Self
+    where
+        F: FnOnce(&mut Self),
+    {
         let mut config = Self::default();
         mutator(&mut config);
         config
     }
-    
+
     /// Generate example configuration file content
     pub fn example_config() -> String {
-        toml::to_string_pretty(&Self::default()).unwrap_or_else(|_| String::from("# Failed to generate example config"))
+        toml::to_string_pretty(&Self::default())
+            .unwrap_or_else(|_| String::from("# Failed to generate example config"))
     }
-    
+
     /// Save configuration to a file
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let content = toml::to_string_pretty(self)
             .map_err(|e| ProtocolError::ConfigError(format!("Failed to serialize config: {e}")))?;
-        
+
         std::fs::write(path, content)
             .map_err(|e| ProtocolError::ConfigError(format!("Failed to write config file: {e}")))?;
-        
+
         Ok(())
     }
 }
@@ -127,22 +130,22 @@ impl NetworkConfig {
 pub struct ServerConfig {
     /// Server listen address (e.g., "127.0.0.1:9000")
     pub address: String,
-    
+
     /// Maximum number of messages in the backpressure queue
     pub backpressure_limit: usize,
-    
+
     /// Timeout for client connections
     #[serde(with = "duration_serde")]
     pub connection_timeout: Duration,
-    
+
     /// Interval for sending heartbeat messages
     #[serde(with = "duration_serde")]
     pub heartbeat_interval: Duration,
-    
+
     /// Timeout for graceful server shutdown
     #[serde(with = "duration_serde")]
     pub shutdown_timeout: Duration,
-    
+
     /// Maximum number of concurrent connections
     pub max_connections: usize,
 }
@@ -169,25 +172,25 @@ pub struct ClientConfig {
     /// Timeout for connection attempts
     #[serde(with = "duration_serde")]
     pub connection_timeout: Duration,
-    
+
     /// Timeout for individual operations
     #[serde(with = "duration_serde")]
     pub operation_timeout: Duration,
-    
+
     /// Timeout for waiting for response messages
     #[serde(with = "duration_serde")]
     pub response_timeout: Duration,
-    
+
     /// Interval for sending heartbeat messages
     #[serde(with = "duration_serde")]
     pub heartbeat_interval: Duration,
-    
+
     /// Whether to automatically reconnect on connection loss
     pub auto_reconnect: bool,
-    
+
     /// Maximum number of reconnect attempts before giving up
     pub max_reconnect_attempts: u32,
-    
+
     /// Delay between reconnect attempts
     #[serde(with = "duration_serde")]
     pub reconnect_delay: Duration,
@@ -213,15 +216,20 @@ impl Default for ClientConfig {
 pub struct TransportConfig {
     /// Whether to enable compression
     pub compression_enabled: bool,
-    
+
     /// Whether to enable encryption
     pub encryption_enabled: bool,
-    
+
     /// Maximum allowed payload size in bytes
     pub max_payload_size: usize,
-    
+
     /// Compression level (when compression is enabled)
     pub compression_level: i32,
+
+    /// Minimum payload size (bytes) before compression is applied
+    /// Payloads smaller than this threshold should bypass compression to reduce overhead
+    #[serde(default)]
+    pub compression_threshold_bytes: usize,
 }
 
 impl Default for TransportConfig {
@@ -230,7 +238,8 @@ impl Default for TransportConfig {
             compression_enabled: ENABLE_COMPRESSION,
             encryption_enabled: ENABLE_ENCRYPTION,
             max_payload_size: MAX_PAYLOAD_SIZE,
-            compression_level: 6,  // Default compression level (medium)
+            compression_level: 6, // Default compression level (medium)
+            compression_threshold_bytes: 512,
         }
     }
 }
@@ -240,20 +249,20 @@ impl Default for TransportConfig {
 pub struct LoggingConfig {
     /// Application name for logs
     pub app_name: String,
-    
+
     /// Log level
     #[serde(with = "log_level_serde")]
     pub log_level: Level,
-    
+
     /// Whether to log to console
     pub log_to_console: bool,
-    
+
     /// Whether to log to file
     pub log_to_file: bool,
-    
+
     /// Path to log file (if log_to_file is true)
     pub log_file_path: Option<String>,
-    
+
     /// Whether to use JSON formatting for logs
     pub json_format: bool,
 }
@@ -273,9 +282,9 @@ impl Default for LoggingConfig {
 
 /// Helper module for Duration serialization/deserialization
 mod duration_serde {
-    use std::time::Duration;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    
+    use std::time::Duration;
+
     pub fn serialize<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -283,7 +292,7 @@ mod duration_serde {
         let millis = duration.as_millis() as u64;
         millis.serialize(serializer)
     }
-    
+
     pub fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
     where
         D: Deserializer<'de>,
@@ -295,10 +304,10 @@ mod duration_serde {
 
 /// Helper module for tracing::Level serialization/deserialization
 mod log_level_serde {
-    use tracing::Level;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::str::FromStr;
-    
+    use tracing::Level;
+
     pub fn serialize<S>(level: &Level, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -312,7 +321,7 @@ mod log_level_serde {
         };
         level_str.serialize(serializer)
     }
-    
+
     pub fn deserialize<'de, D>(deserializer: D) -> Result<Level, D::Error>
     where
         D: Deserializer<'de>,

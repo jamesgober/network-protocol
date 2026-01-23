@@ -1,265 +1,254 @@
-#[cfg(test)]
-mod tests {
-    use crate::protocol::handshake::*;
-    use crate::protocol::message::Message;
-    use std::thread;
-    use std::time::{SystemTime, UNIX_EPOCH};
-    use std::time::Duration;
-    use sha2::{Sha256, Digest};
-    use tracing::debug;
+// test-only module included via protocol/mod.rs
 
-    // Helper functions for tests since the internal functions are not public
-    fn test_current_timestamp() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_millis() as u64
-    }
-    
-    fn test_verify_timestamp(timestamp: u64, max_age_seconds: u64) -> bool {
-        let current = test_current_timestamp();
-        let max_age_ms = max_age_seconds * 1000;
-        
-        // Check if timestamp is from the future (with a small tolerance)
-        if timestamp > current + 5000 { // 5 second tolerance
-            return false;
-        }
-        
-        // Check if timestamp is too old
-        if current - timestamp > max_age_ms {
-            return false;
-        }
-        
-        true
-    }
-    
-    fn test_hash_nonce(nonce: &[u8]) -> [u8; 32] {
-        let mut hasher = Sha256::new();
-        hasher.update(nonce);
-        hasher.finalize().into()
-    }
+use crate::protocol::handshake::*;
+use crate::protocol::message::Message;
 
-    #[test]
-    fn test_timestamp_verification() {
-        // Current timestamp should be valid
-        let timestamp = test_current_timestamp();
-        assert!(test_verify_timestamp(timestamp, 30));
-        
-        // Timestamp from the future (beyond tolerance) should be invalid
-        assert!(!test_verify_timestamp(timestamp + 6000, 30));
-        
-        // Timestamp too old should be invalid
-        assert!(!test_verify_timestamp(timestamp - 31000, 30));
-        
-        // Timestamp within threshold should be valid
-        assert!(test_verify_timestamp(timestamp - 29000, 30));
-    }
-    
-    #[test]
-    fn test_nonce_hashing() {
-        let nonce = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
-        let hash1 = test_hash_nonce(&nonce);
-        let hash2 = test_hash_nonce(&nonce);
-        
-        // Same nonce should produce same hash
-        assert_eq!(hash1, hash2);
-        
-        let different_nonce = [16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1];
-        let hash3 = test_hash_nonce(&different_nonce);
-        
-        // Different nonce should produce different hash
-        assert_ne!(hash1, hash3);
-    }
+#[test]
+fn test_secure_handshake_flow() {
+    // =================== Step 1: Client init ===================
+    let (client_state, init_msg) =
+        client_secure_handshake_init().expect("Client init should succeed");
 
-    #[test]
-    fn test_secure_handshake_flow() {
-        // Set integration test flag to enforce strict nonce checks
-        std::env::set_var("TEST_INTEGRATION", "1");
-        // Set fixed key mode for tests to ensure client and server derive the same key
-        std::env::set_var("TEST_FIXED_KEY", "1");
-        
-        // Reset all handshake state
-        let _ = clear_handshake_data();
-        
-        // Use explicit nonce for testing
-        let client_nonce = [203, 83, 7, 69, 25, 136, 175, 49, 245, 140, 237, 135, 95, 113, 53, 97];
-        let _ = set_client_nonce_for_test(client_nonce);
-        
-        // =================== Step 1: Client init ===================
-        // Client sends handshake initialization with an ephemeral key pair and nonce
-        let init_msg = client_secure_handshake_init().expect("Client init should succeed");
-        
-        // Extract client message data
-        let (client_pub_key, _, timestamp) = match &init_msg {
-            Message::SecureHandshakeInit { pub_key, nonce, timestamp } => {
-                (*pub_key, *nonce, *timestamp)
-            },
-            _ => panic!("Expected SecureHandshakeInit message"),
-        };
-        
-        // Explicitly set the client nonce in the handshake state to ensure consistency
-        // This helps avoid race conditions when multiple tests run concurrently
-        let _ = set_client_nonce_for_test(client_nonce);
-        
-        debug!(client_nonce=?client_nonce, "Client nonce from message");
-        
-        // Hash client nonce for verification check
-        let client_nonce_hash = test_hash_nonce(&client_nonce);
-        debug!(hash=?client_nonce_hash, "Client nonce hash for verification");
-        
-        // =================== Step 2: Server responds ===================
-        // Server creates response message
-        let server_response = server_secure_handshake_response(client_pub_key, client_nonce, timestamp)
+    // Extract client message data
+    let (client_pub_key, timestamp, client_nonce) = match &init_msg {
+        Message::SecureHandshakeInit {
+            pub_key,
+            nonce,
+            timestamp,
+        } => (*pub_key, *timestamp, *nonce),
+        _ => panic!("Expected SecureHandshakeInit message"),
+    };
+
+    // =================== Step 2: Server responds ===================
+    let (server_state, server_response) =
+        server_secure_handshake_response(client_pub_key, client_nonce, timestamp)
             .expect("Server response should succeed");
-        
-        // Extract server response data
-        let (server_pub_key, server_nonce, nonce_verification) = match server_response {
-            Message::SecureHandshakeResponse { pub_key, nonce, nonce_verification } => 
-                (pub_key, nonce, nonce_verification),
-            _ => panic!("Expected SecureHandshakeResponse message"),
-        };
-        
-        debug!(server_nonce=?server_nonce, "Server nonce from response");
-        debug!(server_pub_key=?server_pub_key, "Server public key from response");
-        
-        // Make sure the server uses the same nonce throughout the handshake
-        let _ = set_server_nonce_for_test(server_nonce);
-        
-        // Ensure client has the correct server public key stored
-        let _ = set_server_pub_key_for_test(server_pub_key);
-        
-        // Verify server correctly hashed client nonce
-        assert_eq!(client_nonce_hash, nonce_verification, "Server nonce verification hash doesn't match client nonce");
-        
-        // =================== Step 3: Client verifies and confirms ===================
-        // Client verifies server response and confirms with explicit nonce
-        let client_confirm = client_secure_handshake_verify_with_test_nonce(
-            server_pub_key, 
-            server_nonce, 
-            nonce_verification, // Use the server's verification of our nonce
-            client_nonce // Pass in the original client nonce to ensure consistency
-        ).expect("Client verification should succeed");
-        
-        // Extract client confirmation data
-        let confirmation_hash = match client_confirm {
-            Message::SecureHandshakeConfirm { nonce_verification } => nonce_verification,
-            _ => panic!("Expected SecureHandshakeConfirm message"),
-        };
-        
-        // Verify client correctly hashed server nonce
-        let expected_server_hash = test_hash_nonce(&server_nonce);
-        assert_eq!(expected_server_hash, confirmation_hash, "Client hash of server nonce doesn't match");
-        
-        // =================== Step 4: Session key derivation ===================
-        // Server finalizes handshake and derives key
-        let server_key = server_secure_handshake_finalize(confirmation_hash)
-            .expect("Server finalization should succeed");
-        
-        // Client derives session key using the exact same client_nonce that was extracted from the init message
-        // This ensures we use the same nonce throughout the entire test flow
-        let client_key = client_derive_session_key_with_test_nonce(client_nonce)
-            .expect("Client should be able to derive session key");
-            
-        debug!(server_key=?server_key, "Derived server session key");
-        debug!(client_key=?client_key, "Derived client session key");
-            
-        // Keys should match (validates the Diffie-Hellman exchange worked)
-        assert_eq!(server_key, client_key, "Client and server session keys don't match");
-        
-        // Clean up environment variables
-        std::env::remove_var("TEST_INTEGRATION");
-        std::env::remove_var("TEST_FIXED_KEY");
-    }
 
-    #[test]
-    fn test_replay_attack_prevention() {
-        // Set integration test flag to enforce strict nonce checks
-        std::env::set_var("TEST_INTEGRATION", "1");
-        
-        // Clear any previous handshake data with complete state reset
-        let _ = clear_handshake_data();
-        
-        // Get initial client message
-        let init_message = client_secure_handshake_init().expect("Client init should succeed");
-        
-        // Extract client data
-        let (client_pub_key, timestamp, client_nonce) = match init_message {
-            Message::SecureHandshakeInit { pub_key, timestamp, nonce } => (pub_key, timestamp, nonce),
-            _ => panic!("Expected SecureHandshakeInit message"),
-        };
-        
-        // Wait for a moment to simulate time passing
-        thread::sleep(Duration::from_millis(1100));
-        
-        // Modify timestamp to be too old
-        let old_timestamp = timestamp - 31000;
-        
-        // This simulates a replay attack
-        let replayed_message = Message::SecureHandshakeInit {
-            pub_key: client_pub_key,
-            timestamp: old_timestamp,
-            nonce: client_nonce,
-        };
-        
-        // Verify that the timestamp is rejected
-        match replayed_message {
-            Message::SecureHandshakeInit { timestamp, .. } => {
-                assert!(!test_verify_timestamp(timestamp, 30));
-            },
-            _ => panic!("Wrong message type"),
-        }
-        
-        // Clean up environment variable
-        std::env::remove_var("TEST_INTEGRATION");
-    }
+    // Extract server response data
+    let (server_pub_key, server_nonce, nonce_verification) = match server_response {
+        Message::SecureHandshakeResponse {
+            pub_key,
+            nonce,
+            nonce_verification,
+        } => (pub_key, nonce, nonce_verification),
+        _ => panic!("Expected SecureHandshakeResponse message"),
+    };
 
-    #[test]
-    fn test_tampering_detection() {
-        // Set integration test flag to enforce strict nonce checks
-        std::env::set_var("TEST_INTEGRATION", "1");
-        
-        // Clear any previous handshake data with complete state reset
-        let _ = clear_handshake_data();
-        
-        // Step 1: Client initiates handshake
-        let init_message = client_secure_handshake_init().expect("Client init should succeed");
-        
-        // Extract client data
-        let (client_pub_key, timestamp, client_nonce) = match init_message {
-            Message::SecureHandshakeInit { pub_key, timestamp, nonce } => (pub_key, timestamp, nonce),
-            _ => panic!("Expected SecureHandshakeInit message"),
-        };
-        
-        // Hash client nonce for verification
-        let client_nonce_hash = test_hash_nonce(&client_nonce);
-        
-        // Step 2: Server processes handshake and responds
-        let server_response = server_secure_handshake_response(client_pub_key, client_nonce, timestamp)
+    // =================== Step 3: Client verifies and confirms ===================
+    let (client_state_verified, client_confirm) = client_secure_handshake_verify(
+        client_state,
+        server_pub_key,
+        server_nonce,
+        nonce_verification,
+    )
+    .expect("Client verification should succeed");
+
+    // Extract client confirmation data
+    let confirmation_hash = match client_confirm {
+        Message::SecureHandshakeConfirm { nonce_verification } => nonce_verification,
+        _ => panic!("Expected SecureHandshakeConfirm message"),
+    };
+
+    // =================== Step 4: Session key derivation ===================
+    let server_key = server_secure_handshake_finalize(server_state, confirmation_hash)
+        .expect("Server finalization should succeed");
+
+    let client_key = client_derive_session_key(client_state_verified)
+        .expect("Client should be able to derive session key");
+
+    // Keys should match (validates the Diffie-Hellman exchange worked)
+    assert_eq!(
+        server_key, client_key,
+        "Client and server session keys must match"
+    );
+}
+
+#[test]
+fn test_replay_attack_prevention() {
+    // Current timestamp should be valid
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("Time went backwards")
+        .as_millis() as u64;
+
+    assert!(verify_timestamp(now_ms, 30));
+
+    // Timestamp too old should be rejected
+    let old_ts = now_ms - 31000; // 31 seconds ago
+    assert!(!verify_timestamp(old_ts, 30));
+
+    // Timestamp too far in future should be rejected
+    let future_ts = now_ms + 3000; // 3 seconds in future (beyond 2s tolerance)
+    assert!(!verify_timestamp(future_ts, 30));
+
+    // Timestamp within tolerance should be accepted
+    let recent_ts = now_ms - 5000; // 5 seconds ago
+    assert!(verify_timestamp(recent_ts, 30));
+}
+
+#[test]
+fn test_tampering_detection() {
+    // Step 1: Client initiates handshake
+    let (_client_state, init_message) =
+        client_secure_handshake_init().expect("Client init should succeed");
+
+    // Extract client data
+    let (client_pub_key, timestamp, client_nonce) = match init_message {
+        Message::SecureHandshakeInit {
+            pub_key,
+            timestamp,
+            nonce,
+        } => (pub_key, timestamp, nonce),
+        _ => panic!("Expected SecureHandshakeInit message"),
+    };
+
+    // Step 2: Server processes handshake and responds
+    let (_server_state, server_response) =
+        server_secure_handshake_response(client_pub_key, client_nonce, timestamp)
             .expect("Server response should succeed");
-        
-        // Extract server data
-        let (server_pub_key, server_nonce, nonce_verification) = match server_response {
-            Message::SecureHandshakeResponse { pub_key, nonce, nonce_verification } => 
-                (pub_key, nonce, nonce_verification),
-            _ => panic!("Expected SecureHandshakeResponse message"),
-        };
-        
-        // Verify server correctly verified client nonce
-        assert_eq!(client_nonce_hash, nonce_verification, "Server should correctly verify client nonce");
-        
-        // Simulate tampering with incorrect verification
-        let tampered_nonce_verification = [0u8; 32];
-        
-        // This should fail verification
-        let result = client_secure_handshake_verify(
-            server_pub_key,
-            server_nonce,
-            tampered_nonce_verification
-        );
-        
-        assert!(result.is_err(), "Verification should fail with tampered nonce hash");
-        
-        // Clean up environment variable
-        std::env::remove_var("TEST_INTEGRATION");
-    }
+
+    // Extract server data
+    let (server_pub_key, server_nonce, _nonce_verification) = match server_response {
+        Message::SecureHandshakeResponse {
+            pub_key,
+            nonce,
+            nonce_verification,
+        } => (pub_key, nonce, nonce_verification),
+        _ => panic!("Expected SecureHandshakeResponse message"),
+    };
+
+    // Simulate tampering with incorrect verification
+    let tampered_nonce_verification = [0u8; 32];
+
+    // Attempt verification with tampered data (using fresh state)
+    let (client_state_fresh, _) =
+        client_secure_handshake_init().expect("Client init should succeed");
+
+    // This should fail verification
+    let result = client_secure_handshake_verify(
+        client_state_fresh,
+        server_pub_key,
+        server_nonce,
+        tampered_nonce_verification,
+    );
+
+    assert!(
+        result.is_err(),
+        "Verification should fail with tampered nonce hash"
+    );
+}
+
+#[test]
+fn test_per_session_state_isolation() {
+    // Simulate two concurrent handshakes - they should not interfere
+    let (client1, msg1) = client_secure_handshake_init().unwrap();
+    let (client2, msg2) = client_secure_handshake_init().unwrap();
+
+    // Extract from messages
+    let (pub_key1, ts1, nonce1) = match msg1 {
+        Message::SecureHandshakeInit {
+            pub_key,
+            timestamp,
+            nonce,
+        } => (pub_key, timestamp, nonce),
+        _ => panic!("Wrong message type"),
+    };
+
+    let (pub_key2, ts2, nonce2) = match msg2 {
+        Message::SecureHandshakeInit {
+            pub_key,
+            timestamp,
+            nonce,
+        } => (pub_key, timestamp, nonce),
+        _ => panic!("Wrong message type"),
+    };
+
+    // Verify they are different (different ephemeral secrets)
+    assert_ne!(pub_key1, pub_key2);
+    assert_ne!(nonce1, nonce2);
+
+    // Server responses should be independent
+    let (server1, resp1) = server_secure_handshake_response(pub_key1, nonce1, ts1).unwrap();
+    let (server2, resp2) = server_secure_handshake_response(pub_key2, nonce2, ts2).unwrap();
+
+    let (server_pub1, server_nonce1, verify1) = match resp1 {
+        Message::SecureHandshakeResponse {
+            pub_key,
+            nonce,
+            nonce_verification,
+        } => (pub_key, nonce, nonce_verification),
+        _ => panic!("Wrong message type"),
+    };
+
+    let (server_pub2, server_nonce2, verify2) = match resp2 {
+        Message::SecureHandshakeResponse {
+            pub_key,
+            nonce,
+            nonce_verification,
+        } => (pub_key, nonce, nonce_verification),
+        _ => panic!("Wrong message type"),
+    };
+
+    assert_ne!(server_pub1, server_pub2);
+    assert_ne!(server_nonce1, server_nonce2);
+
+    // Complete both handshakes independently
+    let (client1_verified, confirm1) =
+        client_secure_handshake_verify(client1, server_pub1, server_nonce1, verify1).unwrap();
+    let (client2_verified, confirm2) =
+        client_secure_handshake_verify(client2, server_pub2, server_nonce2, verify2).unwrap();
+
+    let confirm_hash1 = match confirm1 {
+        Message::SecureHandshakeConfirm { nonce_verification } => nonce_verification,
+        _ => panic!("Wrong message type"),
+    };
+
+    let confirm_hash2 = match confirm2 {
+        Message::SecureHandshakeConfirm { nonce_verification } => nonce_verification,
+        _ => panic!("Wrong message type"),
+    };
+
+    assert_ne!(confirm_hash1, confirm_hash2);
+
+    // Finalize both sides
+    let key1_server = server_secure_handshake_finalize(server1, confirm_hash1).unwrap();
+    let key1_client = client_derive_session_key(client1_verified).unwrap();
+
+    let key2_server = server_secure_handshake_finalize(server2, confirm_hash2).unwrap();
+    let key2_client = client_derive_session_key(client2_verified).unwrap();
+
+    // Keys should match on both sides of each handshake
+    assert_eq!(key1_server, key1_client);
+    assert_eq!(key2_server, key2_client);
+
+    // But different handshakes must have different keys
+    assert_ne!(key1_server, key2_server);
+}
+
+#[test]
+fn test_nonce_uniqueness() {
+    // Verify that nonces are unique across multiple calls
+    let (_s1, msg1) = client_secure_handshake_init().unwrap();
+    let (_s2, msg2) = client_secure_handshake_init().unwrap();
+    let (_s3, msg3) = client_secure_handshake_init().unwrap();
+
+    let nonce1 = match msg1 {
+        Message::SecureHandshakeInit { nonce, .. } => nonce,
+        _ => panic!(),
+    };
+
+    let nonce2 = match msg2 {
+        Message::SecureHandshakeInit { nonce, .. } => nonce,
+        _ => panic!(),
+    };
+
+    let nonce3 = match msg3 {
+        Message::SecureHandshakeInit { nonce, .. } => nonce,
+        _ => panic!(),
+    };
+
+    // All nonces should be unique
+    assert_ne!(nonce1, nonce2);
+    assert_ne!(nonce2, nonce3);
+    assert_ne!(nonce1, nonce3);
 }

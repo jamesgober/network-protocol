@@ -1,6 +1,6 @@
+use crate::error::{ProtocolError, Result};
 use std::time::Duration;
 use tokio::time;
-use crate::error::{Result, ProtocolError};
 
 /// Default timeout duration for network operations (5 seconds)
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);

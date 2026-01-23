@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **CRITICAL**: Added pre-decompression size validation for LZ4 to prevent OOM DoS attacks from malicious size claims (discovered via fuzzing)
+- Refactored the handshake to per-session state with `#[derive(Zeroize)]`, eliminating global mutexed state and ensuring secrets are cleared on drop.
+- Added explicit nonce/key zeroization in secure send/receive paths to prevent secret retention in memory.
+- Bounded decompression output to `MAX_PAYLOAD_SIZE` (4MB) for LZ4 and Zstd to mitigate compression-bomb DoS vectors.
+- Tightened replay protection: 30s maximum age with 2s future skew tolerance for handshake timestamps.
+- Authenticated packet headers (magic/version/length) via AEAD associated data to detect header tampering.
+- Hardened TLS configuration: validate requested versions/cipher suites, validate pinned cert hash length, and emit warnings when insecure mode disables certificate verification.
+- Resolved `cargo-audit` findings by upgrading `rcgen` to 0.14.5 (now 0.14.7 via patch) and pinning `tracing-subscriber` to 0.3.20.
+- Updated TLS self-signed certificate generation to use `rcgen` 0.14 `CertifiedKey` API.
+
+### Added
+- Comprehensive fuzzing infrastructure using cargo-fuzz and libFuzzer
+- Three fuzz targets: packet deserialization, protocol messages, and compression boundaries
+- Fuzzing documentation in fuzz/README.md with usage guidelines and CI integration
+- Pre-decompression validation of LZ4 claimed size to prevent memory exhaustion
+- Configurable `compression_threshold_bytes` to bypass compression for tiny payloads (default 512B)
+- Helper APIs `maybe_compress`/`maybe_decompress` for threshold-aware compression
+- GitHub Actions fuzz smoke job (nightly, 30s per target)
+- Criterion microbenchmarks for packet, compression, message paths
+- Stress tests for encode/decode bursts and concurrent async load
+- Optimized release/bench profiles (LTO, codegen-units=1, strip symbols)
+
+### Added
+- Comprehensive fuzzing infrastructure using cargo-fuzz and libFuzzer
+- Three fuzz targets: packet deserialization, protocol messages, and compression boundaries
+- Fuzzing documentation in fuzz/README.md with usage guidelines and CI integration
+- Pre-decompression validation of LZ4 claimed size to prevent memory exhaustion
+
+### Changed
+- Handshake APIs now return per-connection state and messages instead of relying on global singletons; client and daemon call sites updated accordingly.
+- TLS builder logs and validates configuration intent so operators can confirm enforced TLS settings.
+- Enabled `rcgen` `pem` feature and adapted certificate/key serialization in `src/transport/tls.rs`.
+- Cleaned up clippy warnings across tests and protocol modules.
+- LZ4 decompression now validates claimed size before allocation to prevent DoS
+
+### Fixed
+- Packet serialization now respects the packet's `version` field instead of always writing the protocol constant.
+- LZ4 decompression OOM vulnerability (CVE-class: remote DoS via crafted 4-byte payload)
+
 
 
 ## [1.0.0] - 2025-08-18
