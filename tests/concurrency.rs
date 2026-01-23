@@ -3,6 +3,7 @@ use network_protocol::{config::PROTOCOL_VERSION, core::codec::PacketCodec, core:
 use tokio_util::codec::Encoder;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[allow(clippy::unwrap_used)]
 async fn concurrent_encode_decode_heavy() {
     use std::sync::Arc;
     use tokio::task::JoinSet;

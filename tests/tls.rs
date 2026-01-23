@@ -14,6 +14,7 @@ const CERT_PATH: &str = "tests/test_cert.pem";
 const KEY_PATH: &str = "tests/test_key.pem";
 
 // Helper to generate test certificates
+#[allow(clippy::expect_used)]
 fn generate_test_certificates() -> Result<(PathBuf, PathBuf)> {
     let cert_path = PathBuf::from(CERT_PATH);
     let key_path = PathBuf::from(KEY_PATH);
@@ -70,7 +71,10 @@ async fn test_tls_communication() -> Result<()> {
         assert_eq!(command, "ECHO");
         assert_eq!(payload, vec![1, 2, 3, 4]);
     } else {
-        panic!("Expected Custom message, got: {response:?}");
+        #[allow(clippy::panic)]
+        {
+            panic!("Expected Custom message, got: {response:?}");
+        }
     }
 
     // We're done, so drop the client which will close the connection

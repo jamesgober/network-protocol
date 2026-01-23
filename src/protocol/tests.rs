@@ -1,4 +1,5 @@
 // test-only module included via protocol/mod.rs
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use crate::protocol::handshake::*;
 use crate::protocol::message::Message;
@@ -226,6 +227,7 @@ fn test_per_session_state_isolation() {
 }
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn test_nonce_uniqueness() {
     // Verify that nonces are unique across multiple calls
     let (_s1, msg1) = client_secure_handshake_init().unwrap();
@@ -234,17 +236,17 @@ fn test_nonce_uniqueness() {
 
     let nonce1 = match msg1 {
         Message::SecureHandshakeInit { nonce, .. } => nonce,
-        _ => panic!(),
+        _ => unreachable!("Expected SecureHandshakeInit"),
     };
 
     let nonce2 = match msg2 {
         Message::SecureHandshakeInit { nonce, .. } => nonce,
-        _ => panic!(),
+        _ => unreachable!("Expected SecureHandshakeInit"),
     };
 
     let nonce3 = match msg3 {
         Message::SecureHandshakeInit { nonce, .. } => nonce,
-        _ => panic!(),
+        _ => unreachable!("Expected SecureHandshakeInit"),
     };
 
     // All nonces should be unique

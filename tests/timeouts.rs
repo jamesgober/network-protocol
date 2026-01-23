@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
+
 use network_protocol::error::ProtocolError;
 use network_protocol::protocol::message::Message;
 use network_protocol::service::client::Client;

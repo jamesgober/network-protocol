@@ -50,8 +50,7 @@ impl rustls::client::ServerCertVerifier for CertificateFingerprint {
         _scts: &mut dyn Iterator<Item = &[u8]>,
         _ocsp_response: &[u8],
         _now: std::time::SystemTime,
-    ) -> std::result::Result<rustls::client::ServerCertVerified, rustls::Error>
-    {
+    ) -> std::result::Result<rustls::client::ServerCertVerified, rustls::Error> {
         use sha2::{Digest, Sha256};
 
         let mut hasher = Sha256::new();
@@ -79,8 +78,7 @@ impl rustls::client::ServerCertVerifier for AcceptAnyServerCert {
         _scts: &mut dyn Iterator<Item = &[u8]>,
         _ocsp_response: &[u8],
         _now: std::time::SystemTime,
-    ) -> std::result::Result<rustls::client::ServerCertVerified, rustls::Error>
-    {
+    ) -> std::result::Result<rustls::client::ServerCertVerified, rustls::Error> {
         Ok(rustls::client::ServerCertVerified::assertion())
     }
 }
@@ -397,7 +395,7 @@ impl TlsClientConfig {
     /// Load the TLS client configuration
     pub fn load_client_config(&self) -> Result<ClientConfig> {
         self.log_tls_version_info();
-        
+
         if self.insecure {
             self.build_insecure_client_config()
         } else {
@@ -433,17 +431,16 @@ impl TlsClientConfig {
         let builder = ClientConfig::builder()
             .with_safe_defaults()
             .with_root_certificates(root_store);
-        
+
         // Apply client auth directly
         if let (Some(client_cert_path), Some(client_key_path)) =
             (&self.client_cert_path, &self.client_key_path)
         {
-            let (cert_chain, key) = self.load_client_credentials(client_cert_path, client_key_path)?;
-            builder
-                .with_client_auth_cert(cert_chain, key)
-                .map_err(|e| {
-                    ProtocolError::TlsError(format!("Failed to set client certificate: {e}"))
-                })
+            let (cert_chain, key) =
+                self.load_client_credentials(client_cert_path, client_key_path)?;
+            builder.with_client_auth_cert(cert_chain, key).map_err(|e| {
+                ProtocolError::TlsError(format!("Failed to set client certificate: {e}"))
+            })
         } else {
             Ok(builder.with_no_client_auth())
         }
@@ -454,12 +451,13 @@ impl TlsClientConfig {
         let builder = ClientConfig::builder().with_safe_defaults();
         let verifier = self.create_custom_verifier();
         let custom_builder = builder.with_custom_certificate_verifier(verifier);
-        
+
         // Apply client auth directly
         if let (Some(client_cert_path), Some(client_key_path)) =
             (&self.client_cert_path, &self.client_key_path)
         {
-            let (cert_chain, key) = self.load_client_credentials(client_cert_path, client_key_path)?;
+            let (cert_chain, key) =
+                self.load_client_credentials(client_cert_path, client_key_path)?;
             custom_builder
                 .with_client_auth_cert(cert_chain, key)
                 .map_err(|e| {
@@ -473,16 +471,15 @@ impl TlsClientConfig {
     /// Load system root certificates
     fn load_system_root_certificates(&self) -> Result<RootCertStore> {
         let mut root_store = RootCertStore::empty();
-        let native_certs = rustls_native_certs::load_native_certs().map_err(|e| {
-            ProtocolError::TlsError(format!("Failed to load native certs: {e}"))
-        })?;
+        let native_certs = rustls_native_certs::load_native_certs()
+            .map_err(|e| ProtocolError::TlsError(format!("Failed to load native certs: {e}")))?;
 
         for cert in native_certs {
             root_store.add(&Certificate(cert.0)).map_err(|e| {
                 ProtocolError::TlsError(format!("Failed to add cert to root store: {e}"))
             })?;
         }
-        
+
         Ok(root_store)
     }
 
@@ -498,13 +495,16 @@ impl TlsClientConfig {
     }
 
     /// Load client certificate and private key
-    fn load_client_credentials(&self, cert_path: &str, key_path: &str) -> Result<(Vec<Certificate>, PrivateKey)> {
+    fn load_client_credentials(
+        &self,
+        cert_path: &str,
+        key_path: &str,
+    ) -> Result<(Vec<Certificate>, PrivateKey)> {
         // Load certificate
         let cert_file = File::open(cert_path).map_err(ProtocolError::Io)?;
         let mut cert_reader = BufReader::new(cert_file);
-        let certs = rustls_pemfile::certs(&mut cert_reader).map_err(|_| {
-            ProtocolError::TlsError("Failed to parse client certificate".into())
-        })?;
+        let certs = rustls_pemfile::certs(&mut cert_reader)
+            .map_err(|_| ProtocolError::TlsError("Failed to parse client certificate".into()))?;
 
         if certs.is_empty() {
             return Err(ProtocolError::TlsError(

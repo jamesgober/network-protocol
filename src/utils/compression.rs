@@ -121,6 +121,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::unwrap_used)]
     fn test_lz4_compression_roundtrip() {
         let original = b"Hello, World! This is a test of LZ4 compression.";
         let compressed = compress(original, &CompressionKind::Lz4).unwrap();
@@ -129,6 +130,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::unwrap_used)]
     fn test_zstd_compression_roundtrip() {
         let original = b"Hello, World! This is a test of Zstd compression.";
         let compressed = compress(original, &CompressionKind::Zstd).unwrap();
@@ -181,6 +183,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::unwrap_used)]
     fn test_maybe_compress_below_threshold() {
         let data = b"tiny";
         let (out, compressed) = maybe_compress(data, &CompressionKind::Lz4, 512).unwrap();
@@ -191,6 +194,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::unwrap_used)]
     fn test_maybe_compress_above_threshold() {
         let data = vec![1u8; 1024];
         let (out, compressed) = maybe_compress(&data, &CompressionKind::Lz4, 512).unwrap();

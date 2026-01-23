@@ -16,6 +16,7 @@ async fn setup_server(addr: &str) -> (JoinHandle<()>, oneshot::Sender<()>) {
     // Start the server with proper shutdown handling
     let server_handle = tokio::spawn(async move {
         let server_task = tokio::spawn(async move {
+            #[allow(clippy::unwrap_used)]
             daemon::start(&addr).await.unwrap();
         });
 
@@ -46,7 +47,10 @@ async fn benchmark_roundtrip_latency() {
             client
         }
         Err(e) => {
-            panic!("Failed to connect: {e:?}");
+            #[allow(clippy::panic)]
+            {
+                panic!("Failed to connect: {e:?}");
+            }
         }
     };
 
@@ -125,7 +129,10 @@ async fn benchmark_throughput() {
             client
         }
         Err(e) => {
-            panic!("Failed to connect: {e:?}");
+            #[allow(clippy::panic)]
+            {
+                panic!("Failed to connect: {e:?}");
+            }
         }
     };
 

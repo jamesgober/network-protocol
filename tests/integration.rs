@@ -1,3 +1,5 @@
+#![allow(clippy::panic)]
+
 use network_protocol::protocol::message::Message;
 use network_protocol::service::client::Client;
 use network_protocol::service::daemon;

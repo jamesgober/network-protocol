@@ -108,5 +108,6 @@ pub enum ProtocolError {
     #[error("TLS error: {0}")]
     TlsError(String),
 }
+
 /// Type alias for Results using ProtocolError
 pub type Result<T> = std::result::Result<T, ProtocolError>;

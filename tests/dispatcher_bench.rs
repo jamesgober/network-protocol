@@ -10,6 +10,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
+    #[allow(clippy::unwrap_used)]
     fn benchmark_dispatcher_rwlock_contention() {
         let dispatcher = Arc::new(Dispatcher::new());
 
@@ -80,13 +81,17 @@ mod tests {
         }
 
         // Collect read times
+        #[allow(clippy::unwrap_used)]
         let mut total_read_time = Duration::ZERO;
+        #[allow(clippy::unwrap_used)]
         for handle in reader_handles {
             total_read_time += handle.join().unwrap();
         }
 
         // Collect write times
+        #[allow(clippy::unwrap_used)]
         let mut total_write_time = Duration::ZERO;
+        #[allow(clippy::unwrap_used)]
         for handle in writer_handles {
             total_write_time += handle.join().unwrap();
         }

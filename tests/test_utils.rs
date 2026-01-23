@@ -27,6 +27,7 @@ impl BenchmarkClient {
         RngCore::fill_bytes(&mut OsRng, &mut client_nonce);
 
         // Get current timestamp
+        #[allow(clippy::expect_used)]
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("Time went backwards")

@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::uninlined_format_args)]
+
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
 use network_protocol::utils::compression::{compress, decompress, CompressionKind};
 

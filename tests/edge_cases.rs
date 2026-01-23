@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Comprehensive edge-case tests for production-grade reliability
 //! Tests boundary conditions, error scenarios, resource limits, and concurrent edge cases
 

@@ -3,6 +3,7 @@ use network_protocol::{config::PROTOCOL_VERSION, core::codec::PacketCodec, core:
 use tokio_util::codec::Encoder;
 
 #[test]
+#[allow(clippy::unwrap_used)]
 fn stress_packet_encode_decode_large_series() {
     // Simulate heavy burst of packets, ensure no panics and minimal overhead
     let mut codec = PacketCodec;

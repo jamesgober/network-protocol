@@ -229,7 +229,10 @@ async fn test_config_integration() -> Result<()> {
         assert_eq!(msg, "test message");
         println!("Successfully received echo response");
     } else {
-        panic!("Received unexpected message type: {response:?}");
+        #[allow(clippy::panic)]
+        {
+            panic!("Received unexpected message type: {response:?}");
+        }
     }
 
     // The connection will be dropped automatically when conn goes out of scope

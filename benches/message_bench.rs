@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use network_protocol::protocol::message::Message;
 

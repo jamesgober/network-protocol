@@ -391,6 +391,7 @@ pub fn client_derive_session_key(mut state: ClientHandshakeState) -> Result<[u8;
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
 
