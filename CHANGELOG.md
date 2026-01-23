@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-01-23
+
 ### Security
 - **CODE QUALITY**: Refactored TLS `load_client_config()` from 143 lines to 6 focused helper functions, reducing cyclomatic complexity
 - **SUPPLY CHAIN**: Updated deny.toml to modern cargo-deny 0.18+ format (removed deprecated keys, improved compatibility)
@@ -235,7 +237,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Implemented secure handshake mechanism
 - Added encryption for protocol messages
 
-[Unreleased]: https://github.com/jamesgober/network-protocol/compare/1.0.0...HEAD
+[Unreleased]: https://github.com/jamesgober/network-protocol/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/jamesgober/network-protocol/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/jamesgober/network-protocol/compare/v0.9.9...v1.0.0
 [0.9.9]: https://github.com/jamesgober/network-protocol/compare/v0.9.6...v0.9.9
 [0.9.6]: https://github.com/jamesgober/network-protocol/compare/v0.9.3...v0.9.6

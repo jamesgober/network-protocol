@@ -324,7 +324,7 @@ let response = dispatcher.dispatch(&Message::Ping)?;
 ### Install Manually
 ```toml
 [dependencies]
-network-protocol = "1.0.0"
+network-protocol = "1.0.1"
 ```
 
 ### Install Using Cargo

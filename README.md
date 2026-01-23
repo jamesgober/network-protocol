@@ -103,7 +103,7 @@
 Add the library to your `Cargo.toml`:
 ```toml
 [dependencies]
-network-protocol = "1.0.0"
+network-protocol = "1.0.1"
 ```
 
 <br>
