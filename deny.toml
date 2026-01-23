@@ -4,7 +4,12 @@
 [advisories]
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
-ignore = []
+ignore = [
+    # Unmaintained: bincode 1.3.3 (RUSTSEC-2025-0141). We use it only for internal serialization; migration to an alternative (e.g., postcard/bitcode) is tracked separately.
+    "RUSTSEC-2025-0141",
+    # Unmaintained: rustls-pemfile 1.0.4 (RUSTSEC-2025-0134). rustls 0.21 still depends on it; upgrade path requires rustls-pki-types API migration.
+    "RUSTSEC-2025-0134",
+]
 
 [licenses]
 allow = [
@@ -14,7 +19,7 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
-    "Unicode-DFS-2016",
+    "Unicode-3.0",
 ]
 confidence-threshold = 0.8
 
