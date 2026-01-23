@@ -30,6 +30,26 @@
 //! ensuring correct parsing and serialization.
 //!
 //! It is designed to be efficient, minimal, and easy to integrate into the protocol layer.
+//! # Protocol Layer
+//!
+//! Core protocol implementation including message handling, handshakes, and keepalive.
+//!
+//! This module implements the application-level protocol on top of the transport layer.
+//! It handles secure session establishment, message routing, and connection lifecycle.
+//!
+//! ## Components
+//! - **Handshake**: Secure session establishment with nonce and timestamp validation
+//! - **Message**: Application-level message types and serialization
+//! - **Dispatcher**: Message routing and handler registration
+//! - **Heartbeat**: Connection liveness and idle detection
+//! - **Keepalive**: Ping/pong mechanism for timeout prevention
+//!
+//! ## Security Features
+//! - Per-session nonce tracking (prevents replay attacks)
+//! - Timestamp validation (5-second window)
+//! - AEAD encryption for all messages
+//! - Session-specific encryption keys
+
 pub mod dispatcher;
 pub mod handshake;
 pub mod heartbeat;

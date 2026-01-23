@@ -1,3 +1,20 @@
+//! # Configuration Management
+//!
+//! Centralized configuration for the network protocol library.
+//!
+//! This module provides structured configuration for servers and clients,
+//! including connection parameters, timeouts, compression settings, and security options.
+//!
+//! ## Configuration Sources
+//! - TOML files via `from_toml_file()`
+//! - Direct instantiation with defaults
+//! - Environment-specific overrides
+//!
+//! ## Security Considerations
+//! - Default compression threshold (512 bytes) balances performance and CPU
+//! - Recommended timeout values prevent slowloris attacks
+//! - TLS settings enforce modern cryptography (TLS 1.2+)
+
 use crate::error::{ProtocolError, Result};
 use crate::utils::timeout;
 use serde::{Deserialize, Serialize};

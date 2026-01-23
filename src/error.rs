@@ -1,25 +1,20 @@
-//! # Error
+//! # Error Types
 //!
-//! This file is part of the Network Protocol project.
+//! Comprehensive error handling for the network protocol.
 //!
-//! It defines the error types used throughout the protocol layer.
+//! This module defines all error variants that can occur during protocol operations,
+//! from low-level I/O errors to high-level protocol violations.
 //!
-//! This module provides a unified error handling mechanism for the network protocol,
-//! encapsulating various error scenarios such as I/O errors, serialization issues,
-//! and protocol-specific logic failures.
+//! ## Error Categories
+//! - **I/O Errors**: Network and file system failures
+//! - **Protocol Errors**: Invalid packets, handshake failures, timeouts
+//! - **Cryptographic Errors**: Encryption/decryption failures
+//! - **TLS Errors**: Certificate and connection issues
+//! - **Compression Errors**: Decompression failures, size limit violations
 //!
-//! It uses the `thiserror` crate for ergonomic error definition.
+//! All errors implement `std::error::Error` for interoperability.
 //!
-//! A custom `Result<T>` alias is provided to simplify signatures across the protocol stack.
-//!
-//! The `ProtocolError` enum includes variants for:
-//! - Invalid headers
-//! - Unsupported protocol versions
-//! - Oversized packets
-//! - Encryption/decryption failures
-//! - I/O and serialization errors
-//!
-//! # Example Usage
+//! ## Example Usage
 //! ```rust
 //! use network_protocol::error::{ProtocolError, Result};
 //! use std::fs::File;
@@ -45,8 +40,7 @@ use serde::{Deserialize, Serialize};
 use std::io;
 use thiserror::Error;
 
-pub type Result<T> = std::result::Result<T, ProtocolError>;
-
+// ProtocolError is the primary error type for all protocol operations
 #[derive(Error, Debug, Serialize, Deserialize)]
 pub enum ProtocolError {
     #[error("I/O error: {0}")]
@@ -114,3 +108,5 @@ pub enum ProtocolError {
     #[error("TLS error: {0}")]
     TlsError(String),
 }
+/// Type alias for Results using ProtocolError
+pub type Result<T> = std::result::Result<T, ProtocolError>;
