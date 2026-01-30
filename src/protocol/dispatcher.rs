@@ -1,4 +1,4 @@
-use crate::error::{ProtocolError, Result};
+use crate::error::{constants, ProtocolError, Result};
 use crate::protocol::message::Message;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -29,9 +29,10 @@ impl Dispatcher {
     where
         F: Fn(&Message) -> Result<Message> + Send + Sync + 'static,
     {
-        let mut handlers = self.handlers.write().map_err(|_| {
-            ProtocolError::Custom("Failed to acquire write lock on dispatcher".to_string())
-        })?;
+        let mut handlers = self
+            .handlers
+            .write()
+            .map_err(|_| ProtocolError::Custom(constants::ERR_DISPATCHER_WRITE_LOCK.into()))?;
 
         handlers.insert(Cow::Owned(opcode.to_string()), Box::new(handler));
         Ok(())
@@ -40,9 +41,10 @@ impl Dispatcher {
     pub fn dispatch(&self, msg: &Message) -> Result<Message> {
         let opcode = get_opcode(msg);
 
-        let handlers = self.handlers.read().map_err(|_| {
-            ProtocolError::Custom("Failed to acquire read lock on dispatcher".to_string())
-        })?;
+        let handlers = self
+            .handlers
+            .read()
+            .map_err(|_| ProtocolError::Custom(constants::ERR_DISPATCHER_READ_LOCK.into()))?;
 
         handlers
             .get(opcode.as_ref())

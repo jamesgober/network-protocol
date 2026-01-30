@@ -73,6 +73,19 @@ pub mod constants {
     /// Security errors
     pub const ERR_SECURITY_ERROR: &str = "Security violation detected";
     pub const ERR_LOCK_POISONED: &str = "Synchronization primitive poisoned";
+
+    /// Handshake-specific errors
+    pub const ERR_SYSTEM_TIME: &str = "System time error: time went backwards";
+    pub const ERR_INVALID_TIMESTAMP: &str = "Invalid or stale timestamp";
+    pub const ERR_REPLAY_ATTACK: &str = "Replay attack detected - nonce/timestamp already seen";
+    pub const ERR_CLIENT_NONCE_NOT_FOUND: &str = "Client nonce not found";
+    pub const ERR_SERVER_NONCE_NOT_FOUND: &str = "Server nonce not found";
+    pub const ERR_CLIENT_SECRET_NOT_FOUND: &str = "Client secret not found";
+    pub const ERR_SERVER_SECRET_NOT_FOUND: &str = "Server secret not found";
+    pub const ERR_CLIENT_PUBLIC_NOT_FOUND: &str = "Client public key not found";
+    pub const ERR_SERVER_PUBLIC_NOT_FOUND: &str = "Server public key not found";
+    pub const ERR_NONCE_VERIFICATION_FAILED: &str = "Server failed to verify client nonce";
+    pub const ERR_SERVER_VERIFICATION_FAILED: &str = "Client failed to verify server nonce";
 }
 
 // ProtocolError is the primary error type for all protocol operations

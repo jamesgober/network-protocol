@@ -9,7 +9,7 @@
 //! the handshake flow. This prevents concurrent handshake state trampling and ensures
 //! clean state per connection.
 
-use crate::error::{ProtocolError, Result};
+use crate::error::{constants, ProtocolError, Result};
 use crate::protocol::message::Message;
 use crate::utils::replay_cache::ReplayCache;
 use rand_core::{OsRng, RngCore};
@@ -113,7 +113,7 @@ fn current_timestamp() -> Result<u64> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
-        .map_err(|_| ProtocolError::Custom("System time error: time went backwards".to_string()))
+        .map_err(|_| ProtocolError::Custom(constants::ERR_SYSTEM_TIME.into()))
 }
 
 /// Generate a cryptographically secure random nonce
@@ -228,14 +228,14 @@ pub fn server_secure_handshake_response(
     // Validate the client timestamp (must be within last 30 seconds)
     if !verify_timestamp(client_timestamp, 30) {
         return Err(ProtocolError::HandshakeError(
-            "Invalid or stale timestamp".to_string(),
+            constants::ERR_INVALID_TIMESTAMP.into(),
         ));
     }
 
     // Check for replay attacks using the cache
     if replay_cache.is_replay(peer_id, &client_nonce, client_timestamp) {
         return Err(ProtocolError::HandshakeError(
-            "Replay attack detected - nonce/timestamp already seen".to_string(),
+            constants::ERR_REPLAY_ATTACK.into(),
         ));
     }
 
@@ -287,20 +287,20 @@ pub fn client_secure_handshake_verify(
     if replay_cache.is_replay(peer_id, &server_nonce, 0) {
         // Use 0 for server nonce timestamp check
         return Err(ProtocolError::HandshakeError(
-            "Replay attack detected - server nonce already seen".to_string(),
+            constants::ERR_REPLAY_ATTACK.into(),
         ));
     }
 
     // Verify that server correctly verified our nonce
-    let client_nonce = state
-        .client_nonce
-        .ok_or_else(|| ProtocolError::HandshakeError("Client nonce not found".to_string()))?;
+    let client_nonce = state.client_nonce.ok_or_else(|| {
+        ProtocolError::HandshakeError(constants::ERR_CLIENT_NONCE_NOT_FOUND.into())
+    })?;
 
     let expected_verification = hash_nonce(&client_nonce);
 
     if expected_verification != nonce_verification {
         return Err(ProtocolError::HandshakeError(
-            "Server failed to verify client nonce".to_string(),
+            constants::ERR_NONCE_VERIFICATION_FAILED.into(),
         ));
     }
 
@@ -308,15 +308,15 @@ pub fn client_secure_handshake_verify(
     state.server_public = Some(server_pub_key);
     state.server_nonce = Some(server_nonce);
     // Verify that server correctly verified our nonce
-    let client_nonce = state
-        .client_nonce
-        .ok_or_else(|| ProtocolError::HandshakeError("Client nonce not found".to_string()))?;
+    let client_nonce = state.client_nonce.ok_or_else(|| {
+        ProtocolError::HandshakeError(constants::ERR_CLIENT_NONCE_NOT_FOUND.into())
+    })?;
 
     let expected_verification = hash_nonce(&client_nonce);
 
     if expected_verification != nonce_verification {
         return Err(ProtocolError::HandshakeError(
-            "Server failed to verify client nonce".to_string(),
+            constants::ERR_NONCE_VERIFICATION_FAILED.into(),
         ));
     }
 
@@ -351,29 +351,28 @@ pub fn server_secure_handshake_finalize(
     nonce_verification: [u8; 32],
 ) -> Result<[u8; 32]> {
     // Verify that client correctly verified our nonce
-    let server_nonce = state
-        .server_nonce
-        .ok_or_else(|| ProtocolError::HandshakeError("Server nonce not found".to_string()))?;
+    let server_nonce = state.server_nonce.ok_or_else(|| {
+        ProtocolError::HandshakeError(constants::ERR_SERVER_NONCE_NOT_FOUND.into())
+    })?;
 
     let expected_verification = hash_nonce(&server_nonce);
 
     if expected_verification != nonce_verification {
         return Err(ProtocolError::HandshakeError(
-            "Client failed to verify server nonce".to_string(),
+            constants::ERR_SERVER_VERIFICATION_FAILED.into(),
         ));
     }
 
     // Extract and take ownership of secret data for key derivation
-    let server_secret = state
-        .secret
-        .take()
-        .ok_or_else(|| ProtocolError::HandshakeError("Server secret not found".to_string()))?;
-    let client_public_bytes = state
-        .client_public
-        .ok_or_else(|| ProtocolError::HandshakeError("Client public key not found".to_string()))?;
-    let client_nonce = state
-        .client_nonce
-        .ok_or_else(|| ProtocolError::HandshakeError("Client nonce not found".to_string()))?;
+    let server_secret = state.secret.take().ok_or_else(|| {
+        ProtocolError::HandshakeError(constants::ERR_SERVER_SECRET_NOT_FOUND.into())
+    })?;
+    let client_public_bytes = state.client_public.ok_or_else(|| {
+        ProtocolError::HandshakeError(constants::ERR_CLIENT_PUBLIC_NOT_FOUND.into())
+    })?;
+    let client_nonce = state.client_nonce.ok_or_else(|| {
+        ProtocolError::HandshakeError(constants::ERR_CLIENT_NONCE_NOT_FOUND.into())
+    })?;
 
     // Perform ECDH to derive shared secret
     let client_public = PublicKey::from(client_public_bytes);
@@ -399,19 +398,18 @@ pub fn server_secure_handshake_finalize(
 #[instrument(skip(state))]
 pub fn client_derive_session_key(mut state: ClientHandshakeState) -> Result<[u8; 32]> {
     // Extract required data
-    let client_secret = state
-        .secret
-        .take()
-        .ok_or_else(|| ProtocolError::HandshakeError("Client secret not found".to_string()))?;
-    let server_public_bytes = state
-        .server_public
-        .ok_or_else(|| ProtocolError::HandshakeError("Server public key not found".to_string()))?;
-    let client_nonce = state
-        .client_nonce
-        .ok_or_else(|| ProtocolError::HandshakeError("Client nonce not found".to_string()))?;
-    let server_nonce = state
-        .server_nonce
-        .ok_or_else(|| ProtocolError::HandshakeError("Server nonce not found".to_string()))?;
+    let client_secret = state.secret.take().ok_or_else(|| {
+        ProtocolError::HandshakeError(constants::ERR_CLIENT_SECRET_NOT_FOUND.into())
+    })?;
+    let server_public_bytes = state.server_public.ok_or_else(|| {
+        ProtocolError::HandshakeError(constants::ERR_SERVER_PUBLIC_NOT_FOUND.into())
+    })?;
+    let client_nonce = state.client_nonce.ok_or_else(|| {
+        ProtocolError::HandshakeError(constants::ERR_CLIENT_NONCE_NOT_FOUND.into())
+    })?;
+    let server_nonce = state.server_nonce.ok_or_else(|| {
+        ProtocolError::HandshakeError(constants::ERR_SERVER_NONCE_NOT_FOUND.into())
+    })?;
 
     // Perform ECDH to derive shared secret
     let server_public = PublicKey::from(server_public_bytes);
