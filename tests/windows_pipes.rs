@@ -58,6 +58,10 @@ mod windows_pipe_tests {
 
         assert_eq!(response.payload, test_packet.payload);
 
+        // Close client connection
+        drop(client);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
         // Shutdown server
         shutdown_tx.send(()).await.expect("Failed to send shutdown");
         timeout(Duration::from_secs(5), server_handle)
@@ -113,6 +117,10 @@ mod windows_pipe_tests {
             assert_eq!(response.payload, test_packet.payload);
         }
 
+        // Close all client connections
+        drop(clients);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
         // Cleanup
         shutdown_tx.send(()).await.expect("Failed to shutdown");
         timeout(Duration::from_secs(5), server_handle)
@@ -160,6 +168,10 @@ mod windows_pipe_tests {
 
         assert_eq!(response.payload.len(), large_payload.len());
         assert_eq!(response.payload, large_payload);
+
+        // Close client connection
+        drop(client);
+        tokio::time::sleep(Duration::from_millis(200)).await;
 
         shutdown_tx.send(()).await.expect("Failed to shutdown");
         timeout(Duration::from_secs(5), server_handle)

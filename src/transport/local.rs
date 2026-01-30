@@ -11,9 +11,9 @@ use tokio::net::{UnixListener, UnixStream};
 #[cfg(any(unix, all(windows, feature = "use-tcp-on-windows")))]
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::codec::Framed;
-use tracing::{info, instrument};
 #[cfg(any(unix, all(windows, feature = "use-tcp-on-windows")))]
 use tracing::{debug, error, warn};
+use tracing::{info, instrument};
 
 use crate::core::codec::PacketCodec;
 use crate::error::Result;
