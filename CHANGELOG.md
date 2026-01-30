@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
 ## [1.1.0] - 2026-01-30
 
 The fastest, most efficient version yet. This release delivers significant performance improvements through adaptive compression, buffer pooling, and zero-allocation error paths while maintaining full backward compatibility.
@@ -393,10 +394,11 @@ All optimizations are transparent and backward compatible. No code changes requi
 
 ### Security
 - Implemented secure handshake mechanism1.0...HEAD
-[1.1.0]: https://github.com/jamesgober/network-protocol/compare/v1.0.1...v1.1.0
-- Added encryption for protocol messages
+
+
 
 [Unreleased]: https://github.com/jamesgober/network-protocol/compare/v1.0.1...HEAD
+[1.1.0]: https://github.com/jamesgober/network-protocol/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/jamesgober/network-protocol/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/jamesgober/network-protocol/compare/v0.9.9...v1.0.0
 [0.9.9]: https://github.com/jamesgober/network-protocol/compare/v0.9.6...v0.9.9
