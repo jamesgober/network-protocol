@@ -7,6 +7,7 @@
 #[cfg(all(windows, not(feature = "use-tcp-on-windows")))]
 mod windows_pipe_tests {
     use futures::{SinkExt, StreamExt};
+    use network_protocol::config::PROTOCOL_VERSION;
     use network_protocol::core::packet::Packet;
     use network_protocol::transport::windows_pipe;
     use std::time::Duration;
@@ -39,6 +40,7 @@ mod windows_pipe_tests {
 
         // Send a test packet
         let test_packet = Packet {
+            version: PROTOCOL_VERSION,
             payload: b"Hello, Windows Pipes!".to_vec(),
         };
 
@@ -93,6 +95,7 @@ mod windows_pipe_tests {
         // Each client sends a packet
         for (i, client) in clients.iter_mut().enumerate() {
             let test_packet = Packet {
+                version: PROTOCOL_VERSION,
                 payload: format!("Client {}", i).into_bytes(),
             };
 
@@ -140,6 +143,7 @@ mod windows_pipe_tests {
         // Send a large packet (1MB)
         let large_payload = vec![0xAB; 1024 * 1024];
         let test_packet = Packet {
+            version: PROTOCOL_VERSION,
             payload: large_payload.clone(),
         };
 
@@ -186,6 +190,7 @@ mod windows_pipe_tests {
 
         // Send a packet
         let test_packet = Packet {
+            version: PROTOCOL_VERSION,
             payload: b"test".to_vec(),
         };
         client.send(test_packet).await.expect("Failed to send");

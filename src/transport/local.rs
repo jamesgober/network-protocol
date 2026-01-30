@@ -1,13 +1,19 @@
+#[cfg(any(unix, all(windows, feature = "use-tcp-on-windows")))]
 use futures::{SinkExt, StreamExt};
 #[cfg(unix)]
 use std::path::Path;
+#[cfg(any(unix, all(windows, feature = "use-tcp-on-windows")))]
 use std::sync::Arc;
+#[cfg(any(unix, all(windows, feature = "use-tcp-on-windows")))]
 use std::time::Duration;
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
+#[cfg(any(unix, all(windows, feature = "use-tcp-on-windows")))]
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::codec::Framed;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{info, instrument};
+#[cfg(any(unix, all(windows, feature = "use-tcp-on-windows")))]
+use tracing::{debug, error, warn};
 
 use crate::core::codec::PacketCodec;
 use crate::error::Result;
