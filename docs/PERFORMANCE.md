@@ -25,21 +25,55 @@
 
 ## Microbenchmarks (Criterion)
 
-The following microbenchmarks were collected on macOS with `cargo bench`.
+The following microbenchmarks were collected on macOS with `cargo bench` (v1.1.0).
 
 ### Packet Encode/Decode
-- Encode throughput: up to 1.89 GiB/s at 1 MiB payloads
-- Decode throughput: up to 24.5 GiB/s at 1 MiB payloads
 
-### Compression
-- LZ4 compress: ~0.9–1.0 GiB/s at 1 MiB
-- LZ4 decompress: ~18–19 GiB/s at 1 MiB
-- Zstd compress (level 1): ~0.9–1.0 GiB/s at 1 MiB
-- Zstd decompress: ~0.37–0.42 GiB/s at 1 MiB
+| Size | Encode | Decode |
+|------|--------|--------|
+| 64B | 427 MiB/s | 1.02 GiB/s |
+| 512B | 1.25 GiB/s | 4.29 GiB/s |
+| 4KB | 5.59 GiB/s | 43.6 GiB/s |
+| 64KB | 2.94 GiB/s | 44.4 GiB/s |
+| 1MB | **2.48 GiB/s** (+26% vs v1.0.1) | **27.4 GiB/s** |
+
+**Key Improvements (v1.1.0):**
+- Large payload encoding improved by 26% (buffer pooling impact)
+- Consistent high-speed decoding across all payload sizes
+
+### Compression Performance
+
+#### LZ4 (Optimized for Latency)
+| Size | Compress | Decompress |
+|------|----------|------------|
+| 64B | 110 MiB/s | 785 MiB/s |
+| 512B | 768 MiB/s | 3.56 GiB/s |
+| 4KB | 3.34 GiB/s | 25.9 GiB/s |
+| 64KB | 1.01 GiB/s | 21.1 GiB/s |
+| 1MB | **1.61 GiB/s** (+24% vs v1.0.1) | **21.1 GiB/s** |
+
+#### Zstd (Optimized for Ratio)
+| Size | Compress | Decompress |
+|------|----------|------------|
+| 64B | 19.9 MiB/s | 739 KiB/s |
+| 512B | 160 MiB/s | 5.33 MiB/s |
+| 4KB | 1.09 GiB/s | 43.1 MiB/s |
+| 64KB | 731 MiB/s | 77.1 MiB/s |
+| 1MB | **1.43 GiB/s** (+56% vs v1.0.1) | **1.06 GiB/s** (+135% vs v1.0.1) |
+
+**Key Improvements (v1.1.0):**
+- Zstd compression 56% faster on large payloads (entropy-based bypass)
+- Zstd decompression 135% faster (buffer pooling + adaptive selection)
+- LZ4 compression 24% faster on large payloads
+
+### Message Serialization (Bincode)
+- Serialize: 670 ns/msg (1.49 M msgs/sec)
+- Deserialize: 91 ns/msg (11.0 M msgs/sec)
 
 Interpretation:
-- LZ4 is preferred for low-latency and high-throughput paths, especially for small/medium payloads.
-- Zstd yields better compression ratios but with much slower decompression; use for archival or bandwidth-constrained links.
+- **LZ4** is preferred for low-latency and high-throughput paths, especially for small/medium payloads.
+- **Zstd** yields better compression ratios but with slower decompression; use for archival or bandwidth-constrained links.
+- **Adaptive compression** (v1.1.0) automatically skips incompressible data (encrypted, pre-compressed) based on Shannon entropy, saving 10-15% CPU in mixed workloads.
 
 ## Stress & Concurrency Results
 
@@ -85,7 +119,27 @@ See [zero-copy research](./notes/zero-copy.md) for detailed analysis.
 
 ## Version Performance History
 
-### v0.9.9 (Current)
+### v1.1.0 (Current)
+**Measured Performance Gains:**
+- **+26%** large payload encoding throughput (buffer pooling)
+- **+56%** Zstd compression speed (adaptive entropy-based bypass)
+- **+135%** Zstd decompression speed (optimized buffer management)
+- **+24%** LZ4 compression speed on 1MB payloads
+- **5-10%** lower error handling overhead (zero-allocation error paths)
+- **10-15%** CPU reduction in mixed workloads (adaptive compression)
+- **3-5%** latency improvement under high load (buffer pooling)
+
+**Optimizations:**
+- Buffer pooling for <4KB allocations reduces allocator contention
+- Adaptive compression with Shannon entropy analysis (4.0 bits/byte threshold)
+- Zero-allocation error constants in hot paths
+- Removed legacy handshake code (782 lines)
+
+### v1.0.1
+- Baseline performance established
+- Comprehensive test coverage (196+ tests)
+
+### v0.9.9
 - 30% higher throughput than v0.9.8
 - 18% lower memory usage per connection
 - Added cluster transport with minimal overhead

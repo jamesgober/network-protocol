@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-01-30
+
+The fastest, most efficient version yet. This release delivers significant performance improvements through adaptive compression, buffer pooling, and zero-allocation error paths while maintaining full backward compatibility.
+
 ### Added
 - **BUFFER POOLING**: Object pooling for small buffer allocations (<4KB)
   - New `src/utils/buffer_pool.rs` module for efficient memory reuse
@@ -163,6 +167,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - TLS client works exactly as before without session caching
   - New `connect_with_session()` API for those who want session resumption
   - Existing applications require zero changes
+
+### Migration Notes
+All optimizations are transparent and backward compatible. No code changes required for existing applications. Performance improvements are automatic upon upgrading to v1.1.0.
 
 ## [1.0.1] - 2026-01-23
 
@@ -385,7 +392,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cross-platform CI testing workflow
 
 ### Security
-- Implemented secure handshake mechanism
+- Implemented secure handshake mechanism1.0...HEAD
+[1.1.0]: https://github.com/jamesgober/network-protocol/compare/v1.0.1...v1.1.0
 - Added encryption for protocol messages
 
 [Unreleased]: https://github.com/jamesgober/network-protocol/compare/v1.0.1...HEAD
