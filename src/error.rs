@@ -40,6 +40,41 @@ use serde::{Deserialize, Serialize};
 use std::io;
 use thiserror::Error;
 
+/// Error message constants to reduce allocations in error paths.
+/// Static strings are borrowed, avoiding heap allocations for common error cases.
+pub mod constants {
+    /// Dispatcher-related error messages
+    pub const ERR_DISPATCHER_WRITE_LOCK: &str = "Failed to acquire write lock on dispatcher";
+    pub const ERR_DISPATCHER_READ_LOCK: &str = "Failed to acquire read lock on dispatcher";
+
+    /// Protocol validation errors
+    pub const ERR_INVALID_HEADER: &str = "Invalid protocol header";
+    pub const ERR_INVALID_PACKET: &str = "Invalid packet structure";
+    pub const ERR_OVERSIZED_PACKET: &str = "Packet exceeds maximum size";
+
+    /// Connection errors
+    pub const ERR_CONNECTION_CLOSED: &str = "Connection closed";
+    pub const ERR_CONNECTION_TIMEOUT: &str = "Connection timed out (no activity)";
+    pub const ERR_TIMEOUT: &str = "Operation timed out";
+
+    /// Cryptographic errors
+    pub const ERR_ENCRYPTION_FAILED: &str = "Encryption failed";
+    pub const ERR_DECRYPTION_FAILED: &str = "Decryption failed";
+
+    /// Compression errors
+    pub const ERR_COMPRESSION_FAILED: &str = "Compression failed";
+    pub const ERR_DECOMPRESSION_FAILED: &str = "Decompression failed";
+
+    /// Protocol negotiation errors
+    pub const ERR_UNSUPPORTED_VERSION: &str = "Unsupported protocol version";
+    pub const ERR_HANDSHAKE_FAILED: &str = "Handshake failed";
+    pub const ERR_UNEXPECTED_MESSAGE: &str = "Unexpected message type";
+
+    /// Security errors
+    pub const ERR_SECURITY_ERROR: &str = "Security violation detected";
+    pub const ERR_LOCK_POISONED: &str = "Synchronization primitive poisoned";
+}
+
 // ProtocolError is the primary error type for all protocol operations
 #[derive(Error, Debug, Serialize, Deserialize)]
 pub enum ProtocolError {
@@ -56,6 +91,9 @@ pub enum ProtocolError {
 
     #[error("Deserialize error: {0}")]
     DeserializeError(String),
+
+    #[error("Serialization error: {0}")]
+    SerializationError(String),
 
     #[error("Transport error: {0}")]
     TransportError(String),

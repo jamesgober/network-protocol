@@ -140,6 +140,40 @@ impl NetworkConfig {
 
         Ok(())
     }
+
+    /// Validate the configuration for common issues and misconfigurations
+    ///
+    /// Returns a list of validation errors. Empty list means configuration is valid.
+    pub fn validate(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+
+        // Validate server configuration
+        errors.extend(self.server.validate());
+
+        // Validate client configuration
+        errors.extend(self.client.validate());
+
+        // Validate transport configuration
+        errors.extend(self.transport.validate());
+
+        // Validate logging configuration
+        errors.extend(self.logging.validate());
+
+        errors
+    }
+
+    /// Validate and return Result - convenience method
+    pub fn validate_strict(&self) -> Result<()> {
+        let errors = self.validate();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(ProtocolError::ConfigError(format!(
+                "Configuration validation failed:\n  - {}",
+                errors.join("\n  - ")
+            )))
+        }
+    }
 }
 
 /// Server-specific configuration
@@ -177,6 +211,66 @@ impl Default for ServerConfig {
             shutdown_timeout: timeout::SHUTDOWN_TIMEOUT,
             max_connections: 1000,
         }
+    }
+}
+
+impl ServerConfig {
+    /// Validate server configuration
+    pub fn validate(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+
+        // Validate address format
+        if self.address.is_empty() {
+            errors.push("Server address cannot be empty".to_string());
+        } else if self.address.parse::<std::net::SocketAddr>().is_err() {
+            errors.push(format!(
+                "Invalid server address format: '{}' (expected format: '0.0.0.0:8080')",
+                self.address
+            ));
+        }
+
+        // Validate backpressure limit
+        if self.backpressure_limit == 0 {
+            errors.push("Backpressure limit must be greater than 0".to_string());
+        } else if self.backpressure_limit > 1_000_000 {
+            errors.push(format!(
+                "Backpressure limit too large: {} (max recommended: 1,000,000)",
+                self.backpressure_limit
+            ));
+        }
+
+        // Validate connection timeout
+        if self.connection_timeout.as_millis() < 100 {
+            errors.push("Connection timeout too short (minimum: 100ms)".to_string());
+        } else if self.connection_timeout.as_secs() > 300 {
+            errors.push("Connection timeout too long (maximum: 300s)".to_string());
+        }
+
+        // Validate heartbeat interval
+        if self.heartbeat_interval.as_millis() < 100 {
+            errors.push("Heartbeat interval too short (minimum: 100ms)".to_string());
+        } else if self.heartbeat_interval.as_secs() > 3600 {
+            errors.push("Heartbeat interval too long (maximum: 1 hour)".to_string());
+        }
+
+        // Validate shutdown timeout
+        if self.shutdown_timeout.as_secs() < 1 {
+            errors.push("Shutdown timeout too short (minimum: 1s)".to_string());
+        } else if self.shutdown_timeout.as_secs() > 60 {
+            errors.push("Shutdown timeout too long (maximum: 60s)".to_string());
+        }
+
+        // Validate max connections
+        if self.max_connections == 0 {
+            errors.push("Max connections must be greater than 0".to_string());
+        } else if self.max_connections > 100_000 {
+            errors.push(format!(
+                "Max connections very high: {} (ensure system resources can support this)",
+                self.max_connections
+            ));
+        }
+
+        errors
     }
 }
 
@@ -228,6 +322,52 @@ impl Default for ClientConfig {
     }
 }
 
+impl ClientConfig {
+    /// Validate client configuration
+    pub fn validate(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+
+        // Validate address format
+        if self.address.is_empty() {
+            errors.push("Client address cannot be empty".to_string());
+        } else if self.address.parse::<std::net::SocketAddr>().is_err() {
+            errors.push(format!(
+                "Invalid client address format: '{}' (expected format: 'example.com:8080')",
+                self.address
+            ));
+        }
+
+        // Validate timeouts
+        if self.connection_timeout.as_millis() < 100 {
+            errors.push("Connection timeout too short (minimum: 100ms)".to_string());
+        }
+
+        if self.operation_timeout.as_millis() < 10 {
+            errors.push("Operation timeout too short (minimum: 10ms)".to_string());
+        }
+
+        if self.response_timeout.as_millis() < 100 {
+            errors.push("Response timeout too short (minimum: 100ms)".to_string());
+        }
+
+        // Validate reconnect settings
+        if self.auto_reconnect && self.max_reconnect_attempts == 0 {
+            errors.push(
+                "Max reconnect attempts must be greater than 0 when auto_reconnect is enabled"
+                    .to_string(),
+            );
+        }
+
+        if self.reconnect_delay.as_millis() < 10 {
+            errors.push("Reconnect delay too short (minimum: 10ms)".to_string());
+        } else if self.reconnect_delay.as_secs() > 60 {
+            errors.push("Reconnect delay too long (maximum: 60s)".to_string());
+        }
+
+        errors
+    }
+}
+
 /// Transport configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TransportConfig {
@@ -258,6 +398,50 @@ impl Default for TransportConfig {
             compression_level: 6, // Default compression level (medium)
             compression_threshold_bytes: 512,
         }
+    }
+}
+
+impl TransportConfig {
+    /// Validate transport configuration
+    pub fn validate(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+
+        // Validate max payload size
+        if self.max_payload_size == 0 {
+            errors.push("Max payload size cannot be 0".to_string());
+        } else if self.max_payload_size < 1024 {
+            errors.push("Max payload size too small (minimum: 1 KB)".to_string());
+        } else if self.max_payload_size > 100 * 1024 * 1024 {
+            errors.push(format!(
+                "Max payload size too large: {} bytes (maximum recommended: 100 MB)",
+                self.max_payload_size
+            ));
+        }
+
+        // Validate compression settings
+        if self.compression_enabled {
+            if self.compression_level < 1 || self.compression_level > 22 {
+                errors.push(format!(
+                    "Invalid compression level: {} (valid range: 1-22)",
+                    self.compression_level
+                ));
+            }
+
+            if self.compression_threshold_bytes > self.max_payload_size {
+                errors.push(
+                    "Compression threshold cannot be larger than max payload size".to_string(),
+                );
+            }
+        }
+
+        // Warn if encryption is disabled
+        if !self.encryption_enabled {
+            errors.push(
+                "WARNING: Encryption is disabled - not recommended for production".to_string(),
+            );
+        }
+
+        errors
     }
 }
 
@@ -294,6 +478,48 @@ impl Default for LoggingConfig {
             log_file_path: None,
             json_format: false,
         }
+    }
+}
+
+impl LoggingConfig {
+    /// Validate logging configuration
+    pub fn validate(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+
+        // Validate app name
+        if self.app_name.is_empty() {
+            errors.push("Application name cannot be empty".to_string());
+        } else if self.app_name.len() > 64 {
+            errors.push(format!(
+                "Application name too long: {} characters (maximum: 64)",
+                self.app_name.len()
+            ));
+        }
+
+        // Validate file logging configuration
+        if self.log_to_file {
+            if let Some(ref path) = self.log_file_path {
+                // Check if parent directory exists (if path is absolute)
+                if let Some(parent) = std::path::Path::new(path).parent() {
+                    if !parent.as_os_str().is_empty() && !parent.exists() {
+                        errors.push(format!(
+                            "Log file directory does not exist: {}",
+                            parent.display()
+                        ));
+                    }
+                }
+            } else {
+                errors.push("log_file_path must be specified when log_to_file is true".to_string());
+            }
+        }
+
+        // Validate at least one output is enabled
+        if !self.log_to_console && !self.log_to_file {
+            errors
+                .push("At least one logging output (console or file) must be enabled".to_string());
+        }
+
+        errors
     }
 }
 

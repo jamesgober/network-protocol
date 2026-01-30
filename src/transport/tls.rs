@@ -105,6 +105,8 @@ pub struct TlsServerConfig {
     tls_versions: Option<Vec<TlsVersion>>,
     /// Allowed cipher suites (None = use rustls defaults)
     cipher_suites: Option<Vec<rustls::SupportedCipherSuite>>,
+    /// ALPN protocols to advertise (default: ["h2", "http/1.1"])
+    alpn_protocols: Option<Vec<Vec<u8>>>,
 }
 
 impl TlsServerConfig {
@@ -117,6 +119,7 @@ impl TlsServerConfig {
             require_client_auth: false,
             tls_versions: None,
             cipher_suites: None,
+            alpn_protocols: Some(vec![b"h2".to_vec(), b"http/1.1".to_vec()]),
         }
     }
 
@@ -145,6 +148,12 @@ impl TlsServerConfig {
         self
     }
 
+    /// Set ALPN protocols to advertise during TLS handshake
+    pub fn with_alpn_protocols(mut self, protocols: Vec<Vec<u8>>) -> Self {
+        self.alpn_protocols = Some(protocols);
+        self
+    }
+
     /// Generate a self-signed certificate for development/testing purposes
     pub fn generate_self_signed<P: AsRef<Path>>(cert_path: P, key_path: P) -> io::Result<Self> {
         let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])
@@ -166,6 +175,7 @@ impl TlsServerConfig {
             require_client_auth: false,
             tls_versions: None,
             cipher_suites: None,
+            alpn_protocols: Some(vec![b"h2".to_vec(), b"http/1.1".to_vec()]),
         })
     }
 
@@ -271,6 +281,15 @@ impl TlsServerConfig {
                 .map_err(|e| ProtocolError::TlsError(format!("TLS error with client auth: {e}")))?;
 
             debug!("mTLS enabled with client certificate verification required");
+        }
+
+        // Configure ALPN protocols if specified
+        if let Some(protocols) = &self.alpn_protocols {
+            config.alpn_protocols = protocols.clone();
+            debug!(
+                protocol_count = protocols.len(),
+                "ALPN protocols configured"
+            );
         }
 
         Ok(config)

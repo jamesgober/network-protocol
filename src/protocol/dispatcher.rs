@@ -1,12 +1,15 @@
 use crate::error::{ProtocolError, Result};
 use crate::protocol::message::Message;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 type HandlerFn = dyn Fn(&Message) -> Result<Message> + Send + Sync + 'static;
 
+/// Message dispatcher with zero-copy opcode routing for statics.
+/// Uses Cow<'static, str> to avoid heap allocations for known message types.
 pub struct Dispatcher {
-    handlers: Arc<RwLock<HashMap<String, Box<HandlerFn>>>>,
+    handlers: Arc<RwLock<HashMap<Cow<'static, str>, Box<HandlerFn>>>>,
 }
 
 impl Default for Dispatcher {
@@ -26,49 +29,42 @@ impl Dispatcher {
     where
         F: Fn(&Message) -> Result<Message> + Send + Sync + 'static,
     {
-        match self.handlers.write() {
-            Ok(mut handlers) => {
-                handlers.insert(opcode.to_string(), Box::new(handler));
-                Ok(())
-            }
-            Err(_) => Err(ProtocolError::Custom(
-                "Failed to acquire write lock on dispatcher handlers".to_string(),
-            )),
-        }
+        let mut handlers = self.handlers.write().map_err(|_| {
+            ProtocolError::Custom("Failed to acquire write lock on dispatcher".to_string())
+        })?;
+
+        handlers.insert(Cow::Owned(opcode.to_string()), Box::new(handler));
+        Ok(())
     }
 
     pub fn dispatch(&self, msg: &Message) -> Result<Message> {
         let opcode = get_opcode(msg);
 
-        let handlers = match self.handlers.read() {
-            Ok(handlers) => handlers,
-            Err(_) => {
-                return Err(ProtocolError::Custom(
-                    "Failed to acquire read lock on dispatcher handlers".to_string(),
-                ))
-            }
-        };
+        let handlers = self.handlers.read().map_err(|_| {
+            ProtocolError::Custom("Failed to acquire read lock on dispatcher".to_string())
+        })?;
 
-        match handlers.get(&opcode) {
-            Some(handler) => handler(msg),
-            None => Err(ProtocolError::UnexpectedMessage),
-        }
+        handlers
+            .get(opcode.as_ref())
+            .ok_or(ProtocolError::UnexpectedMessage)
+            .and_then(|handler| handler(msg))
     }
 }
 
-/// Determine message type name for routing
-fn get_opcode(msg: &Message) -> String {
+/// Determine message type name for routing (zero-copy for known message types).
+/// Returns Cow::Borrowed for static message type opcodes, avoiding allocations in hot path.
+/// For custom commands, returns Cow::Owned since the string comes from the message.
+#[inline]
+fn get_opcode(msg: &Message) -> Cow<'static, str> {
     match msg {
-        Message::Ping => "PING",
-        Message::Pong => "PONG",
-        Message::Echo(_) => "ECHO",
-        // Secure handshake messages
-        Message::SecureHandshakeInit { .. } => "SEC_HS_INIT",
-        Message::SecureHandshakeResponse { .. } => "SEC_HS_RESP",
-        Message::SecureHandshakeConfirm { .. } => "SEC_HS_CONFIRM",
-        Message::Custom { command, .. } => command,
-        Message::Disconnect => "DISCONNECT",
-        Message::Unknown => "UNKNOWN",
+        Message::Ping => Cow::Borrowed("PING"),
+        Message::Pong => Cow::Borrowed("PONG"),
+        Message::Echo(_) => Cow::Borrowed("ECHO"),
+        Message::SecureHandshakeInit { .. } => Cow::Borrowed("SEC_HS_INIT"),
+        Message::SecureHandshakeResponse { .. } => Cow::Borrowed("SEC_HS_RESP"),
+        Message::SecureHandshakeConfirm { .. } => Cow::Borrowed("SEC_HS_CONFIRM"),
+        Message::Custom { command, .. } => Cow::Owned(command.clone()),
+        Message::Disconnect => Cow::Borrowed("DISCONNECT"),
+        Message::Unknown => Cow::Borrowed("UNKNOWN"),
     }
-    .to_string()
 }

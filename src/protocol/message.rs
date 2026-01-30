@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[repr(u8)]
 pub enum Message {
     Ping,
@@ -46,3 +46,6 @@ pub enum Message {
     #[serde(other)]
     Unknown,
 }
+
+// Implement MultiFormat trait for Message to support alternative serialization formats
+impl crate::core::serialization::MultiFormat for Message {}

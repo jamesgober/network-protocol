@@ -21,5 +21,10 @@
 //! - Provide a unified interface for different transport protocols
 pub mod cluster;
 pub mod local;
+pub mod quic;
 pub mod remote;
+pub mod session_cache;
 pub mod tls;
+
+#[cfg(windows)]
+pub mod windows_pipe;

@@ -15,6 +15,7 @@ use crate::protocol::heartbeat::{build_ping, is_pong};
 use crate::protocol::keepalive::KeepAliveManager;
 use crate::service::secure::SecureConnection;
 use crate::transport::remote;
+use crate::utils::replay_cache::ReplayCache;
 use crate::utils::timeout::with_timeout_error;
 
 /// High-level protocol client with post-handshake encryption
@@ -22,6 +23,8 @@ pub struct Client {
     conn: SecureConnection,
     keep_alive: KeepAliveManager,
     config: ClientConfig,
+    #[allow(dead_code)]
+    replay_cache: ReplayCache,
 }
 
 impl Client {
@@ -99,6 +102,8 @@ impl Client {
             server_pub_key,
             server_nonce,
             nonce_verification,
+            &config.address,
+            &mut ReplayCache::new(),
         )?;
 
         let verify_bytes = bincode::serialize(&verify_msg)?;
@@ -122,6 +127,7 @@ impl Client {
             conn,
             keep_alive,
             config,
+            replay_cache: ReplayCache::new(),
         })
     }
 

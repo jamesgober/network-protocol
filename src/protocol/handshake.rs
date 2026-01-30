@@ -11,6 +11,7 @@
 
 use crate::error::{ProtocolError, Result};
 use crate::protocol::message::Message;
+use crate::utils::replay_cache::ReplayCache;
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -216,16 +217,25 @@ pub fn client_secure_handshake_init() -> Result<(ClientHandshakeState, Message)>
 ///
 /// # Errors
 /// Returns `ProtocolError::HandshakeError` if client timestamp is invalid or too old
-#[instrument(skip(client_pub_key, client_nonce))]
+#[instrument(skip(client_pub_key, client_nonce, replay_cache))]
 pub fn server_secure_handshake_response(
     client_pub_key: [u8; 32],
     client_nonce: [u8; 16],
     client_timestamp: u64,
+    peer_id: &str,
+    replay_cache: &mut ReplayCache,
 ) -> Result<(ServerHandshakeState, Message)> {
     // Validate the client timestamp (must be within last 30 seconds)
     if !verify_timestamp(client_timestamp, 30) {
         return Err(ProtocolError::HandshakeError(
             "Invalid or stale timestamp".to_string(),
+        ));
+    }
+
+    // Check for replay attacks using the cache
+    if replay_cache.is_replay(peer_id, &client_nonce, client_timestamp) {
+        return Err(ProtocolError::HandshakeError(
+            "Replay attack detected - nonce/timestamp already seen".to_string(),
         ));
     }
 
@@ -264,13 +274,39 @@ pub fn server_secure_handshake_response(
 ///
 /// # Errors
 /// Returns `ProtocolError::HandshakeError` if verification fails
-#[instrument(skip(state, server_pub_key, server_nonce, nonce_verification))]
+#[instrument(skip(state, server_pub_key, server_nonce, nonce_verification, replay_cache))]
 pub fn client_secure_handshake_verify(
     mut state: ClientHandshakeState,
     server_pub_key: [u8; 32],
     server_nonce: [u8; 16],
     nonce_verification: [u8; 32],
+    peer_id: &str,
+    replay_cache: &mut ReplayCache,
 ) -> Result<(ClientHandshakeState, Message)> {
+    // Check for replay attacks using the cache
+    if replay_cache.is_replay(peer_id, &server_nonce, 0) {
+        // Use 0 for server nonce timestamp check
+        return Err(ProtocolError::HandshakeError(
+            "Replay attack detected - server nonce already seen".to_string(),
+        ));
+    }
+
+    // Verify that server correctly verified our nonce
+    let client_nonce = state
+        .client_nonce
+        .ok_or_else(|| ProtocolError::HandshakeError("Client nonce not found".to_string()))?;
+
+    let expected_verification = hash_nonce(&client_nonce);
+
+    if expected_verification != nonce_verification {
+        return Err(ProtocolError::HandshakeError(
+            "Server failed to verify client nonce".to_string(),
+        ));
+    }
+
+    // Store server info
+    state.server_public = Some(server_pub_key);
+    state.server_nonce = Some(server_nonce);
     // Verify that server correctly verified our nonce
     let client_nonce = state
         .client_nonce
@@ -397,6 +433,9 @@ mod tests {
 
     #[test]
     fn test_per_session_state_isolation() {
+        let mut replay_cache = crate::utils::replay_cache::ReplayCache::new();
+        let peer_id = "test-peer";
+
         // Simulate two concurrent handshakes - they should not interfere
         let (client1, msg1) = client_secure_handshake_init().unwrap();
         let (client2, msg2) = client_secure_handshake_init().unwrap();
@@ -425,8 +464,12 @@ mod tests {
         assert_ne!(nonce1, nonce2);
 
         // Server responses should be independent
-        let (server1, resp1) = server_secure_handshake_response(pub_key1, nonce1, ts1).unwrap();
-        let (server2, resp2) = server_secure_handshake_response(pub_key2, nonce2, ts2).unwrap();
+        let (server1, resp1) =
+            server_secure_handshake_response(pub_key1, nonce1, ts1, peer_id, &mut replay_cache)
+                .unwrap();
+        let (server2, resp2) =
+            server_secure_handshake_response(pub_key2, nonce2, ts2, peer_id, &mut replay_cache)
+                .unwrap();
 
         let (server_pub1, server_nonce1, verify1) = match resp1 {
             Message::SecureHandshakeResponse {
@@ -450,10 +493,24 @@ mod tests {
         assert_ne!(server_nonce1, server_nonce2);
 
         // Client verifications
-        let (client1_verified, confirm1) =
-            client_secure_handshake_verify(client1, server_pub1, server_nonce1, verify1).unwrap();
-        let (client2_verified, confirm2) =
-            client_secure_handshake_verify(client2, server_pub2, server_nonce2, verify2).unwrap();
+        let (client1_verified, confirm1) = client_secure_handshake_verify(
+            client1,
+            server_pub1,
+            server_nonce1,
+            verify1,
+            peer_id,
+            &mut replay_cache,
+        )
+        .unwrap();
+        let (client2_verified, confirm2) = client_secure_handshake_verify(
+            client2,
+            server_pub2,
+            server_nonce2,
+            verify2,
+            peer_id,
+            &mut replay_cache,
+        )
+        .unwrap();
 
         let confirm_hash1 = match confirm1 {
             Message::SecureHandshakeConfirm { nonce_verification } => nonce_verification,

@@ -26,7 +26,7 @@ use crate::error::{ProtocolError, Result};
 pub const HEADER_SIZE: usize = 9; // 4 magic + 1 version + 4 length
 
 /// Represents a fully decoded protocol packet
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Packet {
     pub version: u8,
     pub payload: Vec<u8>,

@@ -3,9 +3,13 @@
 
 use crate::protocol::handshake::*;
 use crate::protocol::message::Message;
+use crate::utils::replay_cache::ReplayCache;
 
 #[test]
 fn test_secure_handshake_flow() {
+    let mut replay_cache = ReplayCache::new();
+    let peer_id = "test-peer";
+
     // =================== Step 1: Client init ===================
     let (client_state, init_msg) =
         client_secure_handshake_init().expect("Client init should succeed");
@@ -21,9 +25,14 @@ fn test_secure_handshake_flow() {
     };
 
     // =================== Step 2: Server responds ===================
-    let (server_state, server_response) =
-        server_secure_handshake_response(client_pub_key, client_nonce, timestamp)
-            .expect("Server response should succeed");
+    let (server_state, server_response) = server_secure_handshake_response(
+        client_pub_key,
+        client_nonce,
+        timestamp,
+        peer_id,
+        &mut replay_cache,
+    )
+    .expect("Server response should succeed");
 
     // Extract server response data
     let (server_pub_key, server_nonce, nonce_verification) = match server_response {
@@ -41,6 +50,8 @@ fn test_secure_handshake_flow() {
         server_pub_key,
         server_nonce,
         nonce_verification,
+        peer_id,
+        &mut replay_cache,
     )
     .expect("Client verification should succeed");
 
@@ -89,6 +100,9 @@ fn test_replay_attack_prevention() {
 
 #[test]
 fn test_tampering_detection() {
+    let mut replay_cache = ReplayCache::new();
+    let peer_id = "test-peer";
+
     // Step 1: Client initiates handshake
     let (_client_state, init_message) =
         client_secure_handshake_init().expect("Client init should succeed");
@@ -104,9 +118,14 @@ fn test_tampering_detection() {
     };
 
     // Step 2: Server processes handshake and responds
-    let (_server_state, server_response) =
-        server_secure_handshake_response(client_pub_key, client_nonce, timestamp)
-            .expect("Server response should succeed");
+    let (_server_state, server_response) = server_secure_handshake_response(
+        client_pub_key,
+        client_nonce,
+        timestamp,
+        peer_id,
+        &mut replay_cache,
+    )
+    .expect("Server response should succeed");
 
     // Extract server data
     let (server_pub_key, server_nonce, _nonce_verification) = match server_response {
@@ -131,6 +150,8 @@ fn test_tampering_detection() {
         server_pub_key,
         server_nonce,
         tampered_nonce_verification,
+        peer_id,
+        &mut replay_cache,
     );
 
     assert!(
@@ -141,6 +162,9 @@ fn test_tampering_detection() {
 
 #[test]
 fn test_per_session_state_isolation() {
+    let mut replay_cache = ReplayCache::new();
+    let peer_id = "test-peer";
+
     // Simulate two concurrent handshakes - they should not interfere
     let (client1, msg1) = client_secure_handshake_init().unwrap();
     let (client2, msg2) = client_secure_handshake_init().unwrap();
@@ -169,8 +193,12 @@ fn test_per_session_state_isolation() {
     assert_ne!(nonce1, nonce2);
 
     // Server responses should be independent
-    let (server1, resp1) = server_secure_handshake_response(pub_key1, nonce1, ts1).unwrap();
-    let (server2, resp2) = server_secure_handshake_response(pub_key2, nonce2, ts2).unwrap();
+    let (server1, resp1) =
+        server_secure_handshake_response(pub_key1, nonce1, ts1, peer_id, &mut replay_cache)
+            .unwrap();
+    let (server2, resp2) =
+        server_secure_handshake_response(pub_key2, nonce2, ts2, peer_id, &mut replay_cache)
+            .unwrap();
 
     let (server_pub1, server_nonce1, verify1) = match resp1 {
         Message::SecureHandshakeResponse {
@@ -194,10 +222,24 @@ fn test_per_session_state_isolation() {
     assert_ne!(server_nonce1, server_nonce2);
 
     // Complete both handshakes independently
-    let (client1_verified, confirm1) =
-        client_secure_handshake_verify(client1, server_pub1, server_nonce1, verify1).unwrap();
-    let (client2_verified, confirm2) =
-        client_secure_handshake_verify(client2, server_pub2, server_nonce2, verify2).unwrap();
+    let (client1_verified, confirm1) = client_secure_handshake_verify(
+        client1,
+        server_pub1,
+        server_nonce1,
+        verify1,
+        peer_id,
+        &mut replay_cache,
+    )
+    .unwrap();
+    let (client2_verified, confirm2) = client_secure_handshake_verify(
+        client2,
+        server_pub2,
+        server_nonce2,
+        verify2,
+        peer_id,
+        &mut replay_cache,
+    )
+    .unwrap();
 
     let confirm_hash1 = match confirm1 {
         Message::SecureHandshakeConfirm { nonce_verification } => nonce_verification,

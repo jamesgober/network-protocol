@@ -18,12 +18,8 @@
 //! The protocol layer is built with a focus on performance,
 //! scalability, and ease of integration with other systems.
 pub mod config;
+pub mod core;
 pub mod error;
-
-pub mod core {
-    pub mod codec;
-    pub mod packet;
-}
 
 pub mod protocol; // message + handshake routing
 pub mod service; // client/daemon abstraction
@@ -33,7 +29,10 @@ pub mod utils; // crypto/compression/time/etc
 pub use config::*;
 pub use core::codec::PacketCodec;
 pub use core::packet::Packet;
+pub use core::serialization::{MultiFormat, SerializationFormat};
 pub use error::*;
+pub use transport::session_cache::SessionCache;
+pub use utils::ReplayCache;
 
 /// Initialize the library with default logging configuration.
 /// This should be called early in your application setup.

@@ -10,6 +10,8 @@
 //! - **Logging**: Structured logging configuration
 //! - **Time**: Timestamp utilities for timeout and expiry checks
 //! - **Timeout**: Async timeout wrappers
+//! - **Replay Cache**: TTL-based nonce deduplication for replay attack prevention
+//! - **Metrics**: Thread-safe observability counters
 //!
 //! ## Security
 //! - Cryptographically secure RNG (getrandom)
@@ -19,8 +21,10 @@
 pub mod compression;
 pub mod crypto;
 pub mod logging;
+pub mod metrics;
+pub mod replay_cache;
 pub mod time;
 pub mod timeout;
 
-/// Optional runtime configuration (may be expanded to struct later)
-pub struct RuntimeConfig;
+// Re-export public types for advanced users
+pub use replay_cache::{CacheKey, ReplayCache};

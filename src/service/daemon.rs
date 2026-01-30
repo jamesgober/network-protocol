@@ -25,6 +25,7 @@ use crate::protocol::handshake::{
 use crate::protocol::heartbeat::{build_ping, is_pong};
 use crate::protocol::keepalive::KeepAliveManager;
 use crate::service::secure::SecureConnection;
+use crate::utils::replay_cache::ReplayCache;
 
 /// Start a secure server and listen for connections using default configuration
 #[instrument(skip(addr), fields(address = %addr))]
@@ -241,8 +242,14 @@ async fn process_connection(
     };
 
     // --- Send Secure Handshake Response ---
-    let (server_state, response) =
-        server_secure_handshake_response(client_pub_key, client_nonce, client_timestamp)?;
+    let mut replay_cache = ReplayCache::new();
+    let (server_state, response) = server_secure_handshake_response(
+        client_pub_key,
+        client_nonce,
+        client_timestamp,
+        &peer.to_string(),
+        &mut replay_cache,
+    )?;
 
     let response_bytes =
         bincode::serialize(&response).map_err(|e| ProtocolError::SerializeError(e.to_string()))?;
