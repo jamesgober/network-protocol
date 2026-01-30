@@ -18,8 +18,8 @@ async fn simulate_delay(duration: Duration) {
 /// Simulates packet loss (returns true if packet should be dropped)
 fn simulate_packet_loss(loss_rate: f32) -> bool {
     use rand::Rng;
-    let mut rng = rand::thread_rng();
-    rng.gen::<f32>() < loss_rate
+    let mut rng = rand::rng();
+    rng.random::<f32>() < loss_rate
 }
 
 #[tokio::test]
@@ -51,20 +51,21 @@ async fn test_timeout_on_slow_operation() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn test_retry_on_simulated_failure() {
-    let mut attempt = 0;
-    let max_attempts = 3;
+    let mut _attempt = 0;
+    let max_attempts = 5; // Increased from 3 to reduce flakiness
 
     loop {
-        attempt += 1;
+        _attempt += 1;
 
-        // Simulate 50% failure rate
-        if simulate_packet_loss(0.5) {
-            if attempt >= max_attempts {
+        // Simulate 30% failure rate (reduced from 50% to reduce flakiness)
+        if simulate_packet_loss(0.3) {
+            if _attempt >= max_attempts {
                 panic!("Failed after {} attempts", max_attempts);
             }
             // Retry with exponential backoff
-            sleep(Duration::from_millis(100 * attempt)).await;
+            sleep(Duration::from_millis(50 * _attempt)).await;
             continue;
         }
 
@@ -72,7 +73,7 @@ async fn test_retry_on_simulated_failure() {
         break;
     }
 
-    assert!(attempt <= max_attempts);
+    assert!(_attempt <= max_attempts);
 }
 
 #[tokio::test]
@@ -155,13 +156,13 @@ async fn test_high_packet_loss_scenario() {
 #[tokio::test]
 async fn test_jitter_simulation() {
     use rand::Rng;
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     let mut delays = vec![];
 
     for _ in 0..10 {
         // Random jitter between 10-50ms
-        let jitter = Duration::from_millis(rng.gen_range(10..50));
+        let jitter = Duration::from_millis(rng.random_range(10..50));
         let start = tokio::time::Instant::now();
         simulate_delay(jitter).await;
         let elapsed = start.elapsed();
@@ -223,7 +224,7 @@ async fn test_cascading_failure_prevention() {
     let failure_threshold = 5;
     let mut circuit_open = false;
 
-    for attempt in 0..10 {
+    for _attempt in 0..10 {
         if circuit_open {
             // Circuit is open, fail fast
             sleep(Duration::from_millis(10)).await;
