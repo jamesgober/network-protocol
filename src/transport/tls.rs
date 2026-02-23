@@ -185,8 +185,7 @@ impl TlsServerConfig {
         let cert_file = File::open(&self.cert_path)
             .map_err(|e| ProtocolError::TlsError(format!("Failed to open cert file: {e}")))?;
         let mut cert_reader = BufReader::new(cert_file);
-        let cert_chain: Vec<_> = certs(&mut cert_reader)
-            .collect::<std::result::Result<Vec<_>, _>>()
+        let cert_chain = certs(&mut cert_reader)
             .map_err(|_| ProtocolError::TlsError("Failed to parse certificate".into()))?;
 
         // Convert to rustls Certificate type
@@ -196,8 +195,7 @@ impl TlsServerConfig {
         let key_file = File::open(&self.key_path)
             .map_err(|e| ProtocolError::TlsError(format!("Failed to open key file: {e}")))?;
         let mut key_reader = BufReader::new(key_file);
-        let keys: Vec<_> = pkcs8_private_keys(&mut key_reader)
-            .collect::<std::result::Result<Vec<_>, _>>()
+        let keys = pkcs8_private_keys(&mut key_reader)
             .map_err(|_| ProtocolError::TlsError("Failed to parse private key".into()))?;
 
         if keys.is_empty() {
@@ -252,11 +250,9 @@ impl TlsServerConfig {
                 ProtocolError::TlsError(format!("Failed to open client CA file: {e}"))
             })?;
             let mut client_ca_reader = BufReader::new(client_ca_file);
-            let client_ca_certs: Vec<_> = certs(&mut client_ca_reader)
-                .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|_| {
-                    ProtocolError::TlsError("Failed to parse client CA certificate".into())
-                })?;
+            let client_ca_certs = certs(&mut client_ca_reader).map_err(|_| {
+                ProtocolError::TlsError("Failed to parse client CA certificate".into())
+            })?;
 
             // Convert to rustls Certificate type
             let client_ca_certs: Vec<Certificate> =
@@ -401,8 +397,7 @@ impl TlsClientConfig {
             .map_err(ProtocolError::Io)?;
 
         // We need to use pkcs8_private_keys on the BufReader directly since it implements BufRead
-        let keys: Vec<_> = pkcs8_private_keys(reader)
-            .collect::<std::result::Result<Vec<_>, _>>()
+        let keys = pkcs8_private_keys(reader)
             .map_err(|_| ProtocolError::TlsError("Failed to parse PKCS8 private key".into()))?;
 
         if !keys.is_empty() {
@@ -527,8 +522,7 @@ impl TlsClientConfig {
         // Load certificate
         let cert_file = File::open(cert_path).map_err(ProtocolError::Io)?;
         let mut cert_reader = BufReader::new(cert_file);
-        let certs: Vec<_> = rustls_pemfile::certs(&mut cert_reader)
-            .collect::<std::result::Result<Vec<_>, _>>()
+        let certs = rustls_pemfile::certs(&mut cert_reader)
             .map_err(|_| ProtocolError::TlsError("Failed to parse client certificate".into()))?;
 
         if certs.is_empty() {
