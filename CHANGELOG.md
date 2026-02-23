@@ -175,7 +175,7 @@ Performance-focused release with adaptive compression, buffer pooling, zero-allo
 - Cross-platform CI testing workflow
 
 
-[Unreleased]: https://github.com/jamesgober/network-protocol/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/jamesgober/network-protocol/compare/v1.1.0...HEAD
 [1.1.0]: https://github.com/jamesgober/network-protocol/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/jamesgober/network-protocol/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/jamesgober/network-protocol/compare/v0.9.9...v1.0.0
