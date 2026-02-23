@@ -90,11 +90,11 @@ zstd = "0.13"
 toml = "0.8"
 
 # TLS dependencies
-rustls = { version = "0.21", features = ["dangerous_configuration"] }
-tokio-rustls = "0.24"
+rustls = { version = "0.22", features = ["dangerous_configuration"] }
+tokio-rustls = "0.25"
 rcgen = { version = "0.14.5", features = ["pem"] }
-rustls-pemfile = "1.0"
-rustls-native-certs = "0.6"
+rustls-pemfile = "2.1"
+rustls-native-certs = "0.7"
 time = "0.3.47"
 
 [dev-dependencies]
