@@ -1,6 +1,5 @@
 #![allow(clippy::panic)]
 
-#[cfg(test)]
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
