@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Critical**: Removed invalid `#[cfg(test)]` attribute from use statement in `tests/shutdown.rs` that caused compilation failures on Linux/macOS CI runners
+- **Critical**: Added missing `SinkExt` trait import in `tests/shutdown.rs` for Framed::send() method call on local transport test
 - Added `.gitattributes` with explicit LF line ending rules to prevent cross-platform line ending conversion issues on Windows CI
 
 ### Added
