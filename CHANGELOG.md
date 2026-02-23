@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Critical**: Removed invalid `#[cfg(test)]` attribute from use statement in `tests/shutdown.rs` that caused compilation failures on Linux/macOS CI runners
+- Added `.gitattributes` with explicit LF line ending rules to prevent cross-platform line ending conversion issues on Windows CI
+
 ### Added
 - **Enterprise Connection Pooling**: Production-grade `ConnectionPool<T>` with Oracle-beating performance features:
   - **Connection Warming**: Automatic pre-creation of `min_size` connections on startup (eliminates cold start latency)
