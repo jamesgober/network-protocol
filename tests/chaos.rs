@@ -1,4 +1,8 @@
 //! Chaos engineering tests
+#![allow(clippy::panic)] // Test code uses panics for assertions
+#![allow(clippy::vec_init_then_push)] // Test code clarity over optimization
+#![allow(clippy::useless_vec)] // Test code prefers explicit vec! for readability
+#![allow(clippy::manual_range_contains)] // Test code prefers explicit comparisons
 //!
 //! Tests network protocol behavior under adverse conditions including
 //! packet loss, delays, and network partitions.

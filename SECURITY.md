@@ -48,3 +48,73 @@ When we receive a security bug report, we will:
 ## Comments on this Policy
 
 If you have suggestions on how this process could be improved, please submit a pull request or open an issue to discuss.
+
+## Cryptographic Material Handling
+
+### Memory Zeroi zation Guarantees (v1.2.0+)
+
+Network-protocol implements comprehensive memory zeroization for all cryptographic material to prevent accidental disclosure through memory dumps, swap files, or side-channel attacks.
+
+**Zeroized Components:**
+
+| Component | Mechanism | Location |
+|-----------|-----------|----------|
+| ECDH Shared Secrets | `zeroize` crate + `Drop` impl | `protocol/handshake.rs` (via x25519-dalek) |
+| Session Keys (32-byte) | `zeroize::Zeroize` trait | `protocol/handshake.rs`, `service/secure.rs` |
+| ChaCha20-Poly1305 Keys | Explicit zeroization on drop | `service/secure.rs` (SecureConnection) |
+| XChaCha Nonces | `zeroize` after encryption/decryption | `service/secure.rs` |
+| TLS Private Keys | `PrivateKeyDer` internal zeroization | `transport/tls.rs` (via rustls crates) |
+| Handshake State | `#[derive(Zeroize, ZeroizeOnDrop)]` | `protocol/handshake.rs` (ClientHandshakeState, ServerHandshakeState) |
+
+**Implementation Details:**
+
+1. **Handshake Keys**: All ephemeral ECDH keypairs are wrapped in `x25519_dalek` types which implement `ZeroizeOnDrop`.
+
+2. **Session Keys**: Derived session keys are explicitly zeroized after being passed to `Crypto::new()`:
+   ```rust
+   let mut key = derive_session_key(...);
+   let crypto = Crypto::new(&key);
+   key.zeroize(); // Explicit clearing
+   ```
+
+3. **Encrypted Payloads**: Plaintext buffers are dropped immediately after encryption, nonces are zeroized after use.
+
+4. **Handshake State**: Client and server handshake state structures derive `Zeroize` and `ZeroizeOnDrop`, ensuring all intermediate cryptographic material is cleared when the state is dropped.
+
+### Compliance Matrix
+
+| Standard | Requirement | Implementation |
+|----------|-------------|----------------|
+| **HIPAA** | Protected Health Information (PHI) must be zeroed from memory | ✅ Session keys zeroized |
+| **PCI-DSS** | Cardholder data must not remain in memory after use | ✅ All crypto material cleared on drop |
+| **GDPR** | Personal data must be securely erased when no longer needed | ✅ Handshake state zeroized |
+| **SOC 2** | Cryptographic keys must be protected in memory | ✅ Comprehensive zeroization audit (v1.2.0) |
+| **NIST SP 800-88** | Data sanitization guidelines | ✅ Memory cleared before deallocation |
+
+### Audit Trail
+
+- **v1.0.1**: Initial zeroization for handshake per-session state
+- **v1.1.0**: Added explicit nonce zeroization in secure send/receive paths
+- **v1.2.0**: Comprehensive audit and hardening:
+  - Added `SharedSecret` wrapper with `Zeroize` trait
+  - Verified all `x25519` shared secrets cleared via `diffie_hellman()`
+  - Documented zeroization guarantees for compliance certification
+  - Added `Crypto::generate_key()` with caller-responsible zeroization contract
+
+### Verification
+
+Run tests with memory sanitizer (nightly):
+```bash
+RUSTFLAGS="-Z sanitizer=memory" cargo +nightly test
+```
+
+Audit zeroization manually:
+```bash
+# Search for all cryptographic types that should be zeroized
+rg "EphemeralSecret|SharedSecret|\[u8; 32\]" src/ --type rust
+```
+
+## Comments on this Policy
+
+If you have suggestions on how this process could be improved, please submit a pull request or open an issue to discuss.
+

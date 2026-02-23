@@ -777,4 +777,106 @@ aws s3 cp "$BACKUP_DIR.tar.gz" s3://backups/network-protocol/
 
 ---
 
+## Appendix: Container & Orchestration Examples
+
+### Docker Container
+
+**Dockerfile** (production-ready):
+
+```dockerfile
+FROM rust:1.75-alpine AS builder
+RUN apk add --no-cache musl-dev openssl-dev
+WORKDIR /app
+COPY . .
+RUN cargo build --release
+
+FROM alpine:3.19
+RUN apk add --no-cache ca-certificates && \
+    adduser -D -u 1000 protocol
+COPY --from=builder /app/target/release/daemon /app/daemon
+USER protocol
+EXPOSE 8443
+CMD ["/app/daemon", "--config", "/app/config.toml"]
+```
+
+### Systemd Service
+
+**/etc/systemd/system/network-protocol.service**:
+
+```ini
+[Unit]
+Description=Network Protocol Service
+After=network.target
+
+[Service]
+Type=simple
+User=protocol
+ExecStart=/opt/network-protocol/bin/daemon --config /etc/network-protocol/config.toml
+Restart=on-failure
+NoNewPrivileges=true
+LimitNOFILE=65536
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### Kubernetes Deployment
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: network-protocol
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: network-protocol
+  template:
+    metadata:
+      labels:
+        app: network-protocol
+    spec:
+      containers:
+      - name: server
+        image: network-protocol:1.2.0
+        ports:
+        - containerPort: 8443
+        resources:
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+        livenessProbe:
+          tcpSocket:
+            port: 8443
+          periodSeconds: 30
+        readinessProbe:
+          tcpSocket:
+            port: 8443
+          periodSeconds: 10
+```
+
+### Connection Pooling Configuration
+
+```rust
+use network_protocol::service::pool::{ConnectionPool, PoolConfig};
+use std::time::Duration;
+
+let config = PoolConfig {
+    min_size: 10,          // Pre-warm connections
+    max_size: 100,         // Maximum concurrent
+    idle_timeout: Duration::from_secs(300),   // 5 min
+    max_lifetime: Duration::from_secs(3600),  // 1 hour
+};
+
+let pool = ConnectionPool::new(factory, config)?;
+let conn = pool.acquire().await?;  // Reuses existing or creates new
+```
+
+---
+
 For specific deployment scenarios or questions, please file an issue on GitHub.

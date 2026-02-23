@@ -153,6 +153,12 @@ pub enum ProtocolError {
     #[error("Configuration error: {0}")]
     ConfigError(String),
 
+    #[error("Circuit breaker open - too many consecutive failures")]
+    CircuitBreakerOpen,
+
+    #[error("Connection pool exhausted - backpressure limit reached")]
+    PoolExhausted,
+
     #[error("Custom error: {0}")]
     Custom(String),
 
