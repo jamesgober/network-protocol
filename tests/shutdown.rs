@@ -1,6 +1,5 @@
 #![allow(clippy::panic)]
 
-use futures::sink::SinkExt;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
@@ -80,6 +79,7 @@ async fn test_tls_daemon_graceful_shutdown() -> network_protocol::error::Result<
 #[tokio::test]
 #[cfg(unix)]
 async fn test_local_transport_graceful_shutdown() -> network_protocol::error::Result<()> {
+    use futures::sink::SinkExt;
     use network_protocol::transport::local;
     use std::path::PathBuf;
     use tokio::fs::remove_file;
