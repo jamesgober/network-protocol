@@ -190,6 +190,14 @@ The network-protocol library is a Rust-based secure networking protocol designed
 - **Purpose**: TLS-wrapped versions of client/daemon
 - **Features**: All base features + TLS encryption
 
+#### Connection Pooling (`src/service/pool.rs`)
+- **Purpose**: Reuse connections with health checks and backpressure controls
+- **Features**: LRU reuse, circuit breaker, connection warming, and TTL enforcement
+
+#### Multiplexing (`src/service/multiplex.rs`)
+- **Purpose**: Route concurrent requests over shared connections
+- **Features**: ID-tagged frames, lockless response routing, timeout cleanup
+
 ### Utilities Layer
 
 #### Crypto (`src/utils/crypto.rs`)

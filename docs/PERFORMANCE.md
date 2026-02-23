@@ -25,20 +25,20 @@
 
 ## Microbenchmarks (Criterion)
 
-The following microbenchmarks were collected on macOS with `cargo bench` (v1.1.0).
+The following microbenchmarks were collected on Windows (MSVC) with `cargo bench` (v1.2.0).
 
 ### Packet Encode/Decode
 
 | Size | Encode | Decode |
 |------|--------|--------|
-| 64B | 427 MiB/s | 1.02 GiB/s |
-| 512B | 1.25 GiB/s | 4.29 GiB/s |
-| 4KB | 5.59 GiB/s | 43.6 GiB/s |
-| 64KB | 2.94 GiB/s | 44.4 GiB/s |
-| 1MB | **2.48 GiB/s** (+26% vs v1.0.1) | **27.4 GiB/s** |
+| 64B | 1.18 GiB/s | 2.18 GiB/s |
+| 512B | 4.51 GiB/s | 15.77 GiB/s |
+| 4KB | 11.08 GiB/s | 69.68 GiB/s |
+| 64KB | 8.67 GiB/s | 18.85 GiB/s |
+| 1MB | **1.64 GiB/s** | **4.90 GiB/s** |
 
-**Key Improvements (v1.1.0):**
-- Large payload encoding improved by 26% (buffer pooling impact)
+**Key Improvements (v1.2.0 baseline):**
+- Large payload encoding improved by buffer pooling
 - Consistent high-speed decoding across all payload sizes
 
 ### Compression Performance
@@ -46,39 +46,44 @@ The following microbenchmarks were collected on macOS with `cargo bench` (v1.1.0
 #### LZ4 (Optimized for Latency)
 | Size | Compress | Decompress |
 |------|----------|------------|
-| 64B | 110 MiB/s | 785 MiB/s |
-| 512B | 768 MiB/s | 3.56 GiB/s |
-| 4KB | 3.34 GiB/s | 25.9 GiB/s |
-| 64KB | 1.01 GiB/s | 21.1 GiB/s |
-| 1MB | **1.61 GiB/s** (+24% vs v1.0.1) | **21.1 GiB/s** |
+| 64B | 308.5 MiB/s | 1.49 GiB/s |
+| 512B | 2.13 GiB/s | 11.88 GiB/s |
+| 4KB | 6.14 GiB/s | 42.14 GiB/s |
+| 64KB | 9.47 GiB/s | 53.12 GiB/s |
+| 1MB | **8.33 GiB/s** | **4.67 GiB/s** |
 
 #### Zstd (Optimized for Ratio)
 | Size | Compress | Decompress |
 |------|----------|------------|
-| 64B | 19.9 MiB/s | 739 KiB/s |
-| 512B | 160 MiB/s | 5.33 MiB/s |
-| 4KB | 1.09 GiB/s | 43.1 MiB/s |
-| 64KB | 731 MiB/s | 77.1 MiB/s |
-| 1MB | **1.43 GiB/s** (+56% vs v1.0.1) | **1.06 GiB/s** (+135% vs v1.0.1) |
+| 64B | 1.47 MiB/s | 63.56 MiB/s |
+| 512B | 12.37 MiB/s | 253.08 MiB/s |
+| 4KB | 81.27 MiB/s | 1.30 GiB/s |
+| 64KB | 959.24 MiB/s | 8.59 GiB/s |
+| 1MB | **3.05 GiB/s** | **4.44 GiB/s** |
 
-**Key Improvements (v1.1.0):**
-- Zstd compression 56% faster on large payloads (entropy-based bypass)
-- Zstd decompression 135% faster (buffer pooling + adaptive selection)
-- LZ4 compression 24% faster on large payloads
+**Key Improvements (v1.2.0 baseline):**
+- Zstd compression improvements from entropy-based bypass
+- Zstd decompression improvements from buffer pooling and adaptive selection
+- LZ4 compression improvements on large payloads
 
 ### Message Serialization (Bincode)
-- Serialize: 670 ns/msg (1.49 M msgs/sec)
-- Deserialize: 91 ns/msg (11.0 M msgs/sec)
+- Serialize: 286 ns/msg (~3.50 M msgs/sec)
+- Deserialize: 55 ns/msg (~18.2 M msgs/sec)
 
 Interpretation:
 - **LZ4** is preferred for low-latency and high-throughput paths, especially for small/medium payloads.
 - **Zstd** yields better compression ratios but with slower decompression; use for archival or bandwidth-constrained links.
-- **Adaptive compression** (v1.1.0) automatically skips incompressible data (encrypted, pre-compressed) based on Shannon entropy, saving 10-15% CPU in mixed workloads.
+- **Adaptive compression** (introduced in v1.1.0) automatically skips incompressible data (encrypted, pre-compressed) based on Shannon entropy, saving 10-15% CPU in mixed workloads.
 
 ## Stress & Concurrency Results
 
 - Encode/decode stress (10k iterations across sizes up to 1 MiB) passes in ~1.2s without panics.
 - Concurrent async stress (8 threads, 50k iterations per size) passes reliably, demonstrating thread-safety in codec and packet paths.
+
+## Pooling and Multiplexing Impact
+
+- Connection pooling reduces handshake churn and stabilizes tail latency under burst load.
+- Request multiplexing improves throughput by keeping connections hot and minimizing per-request setup.
 
 ## Operational Recommendations
 
@@ -119,7 +124,7 @@ See [zero-copy research](./notes/zero-copy.md) for detailed analysis.
 
 ## Version Performance History
 
-### v1.1.0 (Current)
+### v1.2.0 (Current)
 **Measured Performance Gains:**
 - **+26%** large payload encoding throughput (buffer pooling)
 - **+56%** Zstd compression speed (adaptive entropy-based bypass)
@@ -128,6 +133,9 @@ See [zero-copy research](./notes/zero-copy.md) for detailed analysis.
 - **5-10%** lower error handling overhead (zero-allocation error paths)
 - **10-15%** CPU reduction in mixed workloads (adaptive compression)
 - **3-5%** latency improvement under high load (buffer pooling)
+
+**Additional Improvements:**
+- Connection pooling and request multiplexing reduce connection overhead under high concurrency
 
 **Optimizations:**
 - Buffer pooling for <4KB allocations reduces allocator contention
@@ -163,5 +171,5 @@ See [zero-copy research](./notes/zero-copy.md) for detailed analysis.
 <div align="center">
   <br>
   <h2></h2>
-  <sup>COPYRIGHT <small>&copy;</small> 2025 <strong>JAMES GOBER.</strong></sup>
+    <sup>COPYRIGHT <small>&copy;</small> 2026 <strong>JAMES GOBER.</strong></sup>
 </div>

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-02-23
+
 ### Fixed
 - **Critical**: Removed invalid `#[cfg(test)]` attribute from use statement in `tests/shutdown.rs` that caused compilation failures on Linux/macOS CI runners
 - **Critical**: Added missing `SinkExt` trait import in `tests/shutdown.rs` for Framed::send() method call on local transport test
@@ -245,7 +247,8 @@ Performance-focused release with adaptive compression, buffer pooling, zero-allo
 - Cross-platform CI testing workflow
 
 
-[Unreleased]: https://github.com/jamesgober/network-protocol/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/jamesgober/network-protocol/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/jamesgober/network-protocol/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/jamesgober/network-protocol/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/jamesgober/network-protocol/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/jamesgober/network-protocol/compare/v1.0.0...v1.0.1

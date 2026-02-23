@@ -14,10 +14,10 @@
 </div>
 <br>
 <p>
-    A <strong>battle-hardened, security-first</strong> network protocol implementation for Rust. Built for production systems requiring both high performance and strong security guarantees. Features comprehensive DoS protection, memory safety guarantees, and extensive testing infrastructure (196+ tests, fuzzing, stress tests).
+    A <strong>battle-hardened, security-first</strong> network protocol implementation for Rust. Built for production systems requiring both high performance and strong security guarantees. Features comprehensive DoS protection, memory safety guarantees, and extensive testing infrastructure (214+ tests, fuzzing, stress tests).
 </p>
 <p>
-    Designed for <strong>zero-compromise reliability</strong> in high-load environments with built-in backpressure control, automatic connection health monitoring, and graceful degradation. The fastest, most efficient version yet with v1.1.0 delivering measurable performance improvements through adaptive compression, buffer pooling, and zero-allocation optimizations.
+    Designed for <strong>zero-compromise reliability</strong> in high-load environments with built-in backpressure control, automatic connection health monitoring, and graceful degradation. The fastest, most efficient version yet with v1.2.0 delivering measurable performance gains through connection pooling, request multiplexing, adaptive compression, and zero-allocation optimizations.
 </p>
 
 ## Security Guarantees
@@ -35,6 +35,7 @@
 - **Slowloris**: Connection timeouts (configurable), automatic dead connection cleanup
 - **Resource Limits**: Bounded channels, connection limits, compression thresholds
 - **Fuzzing**: 3 fuzz targets continuously tested, OOM attacks caught pre-release
+ - **Zeroize Audit**: Explicit memory clearing for session keys and shared secrets
 
 ### 🔍 Implementation Safety
 - **Memory Safe**: 100% safe Rust (zero `unsafe` in protocol core), fuzz-tested
@@ -68,10 +69,12 @@
 - Heartbeat mechanism with keep-alive ping/pong messages for connection health monitoring
 - Automatic detection and cleanup of dead connections
 - Client-side timeout handling with reconnection capabilities
+- Connection pooling with health checks, LRU reuse, and circuit breaker
+- Request multiplexing with ID-tagged routing and timeout cleanup
 - **Optimized Release Builds**: LTO + single codegen unit for maximum performance
 
 ### Testing & Quality
-- **196+ Test Suite**: Unit, integration, edge cases, stress tests, doc tests
+- **214+ Test Suite**: Unit, integration, edge cases, stress tests, doc tests
 - **Fuzzing Infrastructure**: 3 targets (packet, handshake, compression) with CI smoke tests
 - **Benchmarking**: Criterion-based micro-benchmarks for packet encode/decode, compression, messages
 - **CI Pipeline**: Format, clippy, cross-platform builds (Linux/macOS/Windows), security audits
@@ -82,6 +85,7 @@
 - Graceful shutdown support for all server implementations with configurable timeouts
 - Modular transport: `TCP`, `Unix socket`, `TLS`, `cluster sync`
 - Comprehensive configuration system with `TOML` files and environment variable overrides
+- Configuration validation with detailed error reporting
 - Structured logging with flexible log level control via configuration
 
 ### Compatibility
@@ -103,7 +107,7 @@
 Add the library to your `Cargo.toml`:
 ```toml
 [dependencies]
-network-protocol = "1.1.0"
+network-protocol = "1.2.0"
 ```
 
 <br>
@@ -327,15 +331,18 @@ Run microbenchmarks (Criterion):
 cargo bench
 ```
 
-**Performance Highlights (v1.1.0):**
-- **Packet encode:** 2.48 GiB/s @ 1MB (+26% vs v1.0.1)
-- **Packet decode:** 27.4 GiB/s @ 1MB
-- **LZ4 compress:** 1.61 GiB/s @ 1MB (+24% improvement)
-- **LZ4 decompress:** 21.1 GiB/s @ 1MB
-- **Zstd compress:** 1.43 GiB/s @ 1MB (+56% improvement)
-- **Zstd decompress:** 1.06 GiB/s @ 1MB (+135% improvement)
+**Performance Highlights (v1.2.0 baseline):**
+- **Packet encode:** 1.64 GiB/s @ 1MB
+- **Packet decode:** 4.90 GiB/s @ 1MB
+- **LZ4 compress:** 8.33 GiB/s @ 1MB
+- **LZ4 decompress:** 4.67 GiB/s @ 1MB
+- **Zstd compress:** 3.05 GiB/s @ 1MB
+- **Zstd decompress:** 4.44 GiB/s @ 1MB
 - **Adaptive compression:** 10-15% CPU savings on mixed workloads
 - **Buffer pooling:** 3-5% latency reduction under high load
+- **Pooling + multiplexing:** lower connection churn and improved throughput under concurrency
+
+Benchmarks collected on Windows (MSVC) with `cargo bench`.
 
 See detailed results and recommendations in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 

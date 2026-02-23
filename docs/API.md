@@ -48,6 +48,8 @@
   - [Client](#client)
   - [Daemon](#daemon)
   - [Secure Connection](#secure-connection)
+    - [Connection Pooling](#connection-pooling)
+    - [Multiplexing](#multiplexing)
   - [Configuration](#service-configuration)
 - [Utilities](#utilities)
   - [Cryptography](#cryptography)
@@ -98,14 +100,14 @@ log_to_console = true
 Load the configuration in your code:
 
 ```rust
-use network_protocol::config::Config;
+use network_protocol::config::NetworkConfig;
 
 async fn main() -> Result<()> {
     // Load from a specific file path
-    let config = Config::from_file("path/to/config.toml").await?;
+    let config = NetworkConfig::from_file("path/to/config.toml")?;
     
-    // Or load from the default location
-    let config = Config::load().await?;
+    // Or load from environment variables (defaults + overrides)
+    let config = NetworkConfig::from_env()?;
     
     // Access configuration values
     let server_addr = config.server.address.clone();
@@ -118,20 +120,20 @@ async fn main() -> Result<()> {
 Environment variables override corresponding TOML settings, following this naming pattern:
 
 ```
-NP_SECTION_KEY=value
+NETWORK_PROTOCOL_SECTION_KEY=value
 ```
 
 For example:
 
 ```bash
 # Override server address
-export NP_SERVER_ADDRESS="0.0.0.0:8080"
+export NETWORK_PROTOCOL_SERVER_ADDRESS="0.0.0.0:8080"
 
 # Override logging level
-export NP_LOGGING_LOG_LEVEL="debug"
+export NETWORK_PROTOCOL_LOGGING_LOG_LEVEL="debug"
 
 # Override client timeout
-export NP_CLIENT_CONNECTION_TIMEOUT="10000"
+export NETWORK_PROTOCOL_CONNECTION_TIMEOUT_MS="10000"
 ```
 
 ### Server Setup
@@ -167,12 +169,12 @@ async fn main() -> Result<()> {
 With custom configuration:
 
 ```rust
-use network_protocol::config::Config;
+use network_protocol::config::NetworkConfig;
 use network_protocol::service::daemon::Daemon;
 
 async fn main() -> Result<()> {
     // Load configuration
-    let config = Config::load().await?;
+    let config = NetworkConfig::from_env()?;
     
     // Create and start daemon with custom config
     let daemon = Daemon::with_config(dispatcher, config);
@@ -324,7 +326,7 @@ let response = dispatcher.dispatch(&Message::Ping)?;
 ### Install Manually
 ```toml
 [dependencies]
-network-protocol = "1.1.0"
+network-protocol = "1.2.0"
 ```
 
 ### Install Using Cargo
@@ -1966,6 +1968,42 @@ if let Message::Echo(text) = decrypted {
 }
 ```
 
+### Connection Pooling
+
+The pooling module provides reusable connections with health checks, circuit breaking, and backpressure.
+
+**Example:**
+```rust
+use network_protocol::service::pool::{ConnectionPool, PoolConfig};
+use std::time::Duration;
+
+let config = PoolConfig {
+    min_size: 5,
+    max_size: 50,
+    idle_timeout: Duration::from_secs(300),
+    max_lifetime: Duration::from_secs(3600),
+    ..Default::default()
+};
+
+let pool = ConnectionPool::new(factory, config)?;
+let conn = pool.acquire().await?;
+```
+
+### Multiplexing
+
+The multiplexing module provides ID-tagged request routing over shared connections.
+
+**Example:**
+```rust
+use network_protocol::service::multiplex::{MultiplexConfig, Multiplexer};
+use tokio::io::{AsyncRead, AsyncWrite};
+
+let config = MultiplexConfig::default();
+let (writer, reader) = tokio::io::split(stream);
+let multiplex = Multiplexer::new(reader, writer, config);
+let response = multiplex.request(payload).await?;
+```
+
 ## Utilities
 
 ### Cryptography
@@ -2668,6 +2706,33 @@ let config = NetworkConfig::default_with_overrides(|cfg| {
     cfg.server.connection_timeout = Duration::from_secs(60);
     cfg.transport.compression_enabled = true;
 });
+```
+
+##### `validate`
+
+Validates the configuration and returns a list of validation errors.
+
+```rust
+pub fn validate(&self) -> Vec<String>
+```
+
+**Returns:**
+- `Vec<String>`: Validation errors (empty when valid)
+
+##### `validate_strict`
+
+Validates the configuration and returns a `Result` with a consolidated error message.
+
+```rust
+pub fn validate_strict(&self) -> Result<()>
+```
+
+**Example:**
+```rust
+use network_protocol::config::NetworkConfig;
+
+let config = NetworkConfig::from_env()?;
+config.validate_strict()?;
 ```
 
 ##### `example_config`
