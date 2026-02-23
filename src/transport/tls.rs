@@ -21,8 +21,8 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
-use rustls::ServerName;
-use rustls::{Certificate, ClientConfig, PrivateKey, RootCertStore, ServerConfig};
+use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName};
+use rustls::{ClientConfig, PrivateKeyDer, RootCertStore, ServerConfig};
 use rustls_pemfile::{certs, pkcs8_private_keys};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::client::TlsStream as ClientTlsStream;
@@ -44,8 +44,8 @@ struct CertificateFingerprint {
 impl rustls::client::ServerCertVerifier for CertificateFingerprint {
     fn verify_server_cert(
         &self,
-        end_entity: &Certificate,
-        _intermediates: &[Certificate],
+        end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
         _server_name: &ServerName,
         _scts: &mut dyn Iterator<Item = &[u8]>,
         _ocsp_response: &[u8],
@@ -54,7 +54,7 @@ impl rustls::client::ServerCertVerifier for CertificateFingerprint {
         use sha2::{Digest, Sha256};
 
         let mut hasher = Sha256::new();
-        hasher.update(&end_entity.0);
+        hasher.update(end_entity);
         let hash = hasher.finalize();
 
         if hash.as_slice() == self.fingerprint.as_slice() {
@@ -65,6 +65,15 @@ impl rustls::client::ServerCertVerifier for CertificateFingerprint {
             ))
         }
     }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        // Accept common signature schemes
+        vec![
+            rustls::SignatureScheme::RSA_PKCS1_SHA256,
+            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+            rustls::SignatureScheme::ED25519,
+        ]
+    }
 }
 
 struct AcceptAnyServerCert;
@@ -72,14 +81,22 @@ struct AcceptAnyServerCert;
 impl rustls::client::ServerCertVerifier for AcceptAnyServerCert {
     fn verify_server_cert(
         &self,
-        _end_entity: &Certificate,
-        _intermediates: &[Certificate],
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
         _server_name: &ServerName,
         _scts: &mut dyn Iterator<Item = &[u8]>,
         _ocsp_response: &[u8],
         _now: std::time::SystemTime,
     ) -> std::result::Result<rustls::client::ServerCertVerified, rustls::Error> {
         Ok(rustls::client::ServerCertVerified::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        vec![
+            rustls::SignatureScheme::RSA_PKCS1_SHA256,
+            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+            rustls::SignatureScheme::ED25519,
+        ]
     }
 }
 
