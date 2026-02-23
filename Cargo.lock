@@ -842,7 +842,7 @@ dependencies = [
 
 [[package]]
 name = "network-protocol"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "bincode",
  "bytes",

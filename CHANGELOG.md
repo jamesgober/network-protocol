@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-02-23
+
+Security patch with critical vulnerability fixes and rustls-pemfile compatibility updates.
+
 ### Changed
 - Updated TLS module to work with iterator-based return values from rustls-pemfile (collecting iterator results before error handling)
 
@@ -185,7 +189,8 @@ Performance-focused release with adaptive compression, buffer pooling, zero-allo
 - Cross-platform CI testing workflow
 
 
-[Unreleased]: https://github.com/jamesgober/network-protocol/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/jamesgober/network-protocol/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/jamesgober/network-protocol/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/jamesgober/network-protocol/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/jamesgober/network-protocol/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/jamesgober/network-protocol/compare/v0.9.9...v1.0.0
