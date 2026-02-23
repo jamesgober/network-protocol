@@ -1,3 +1,16 @@
+# Ensure consistent line endings across all platforms
+* text=auto
+*.rs text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.sh text eol=lf eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
 # Exclude development directories from archive exports
 /tests            export-ignore
 /docs             export-ignore
