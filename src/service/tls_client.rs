@@ -1,4 +1,5 @@
 use futures::{SinkExt, StreamExt};
+use rustls::pki_types::ServerName;
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
@@ -7,7 +8,7 @@ use tracing::{debug, instrument};
 
 use crate::core::codec::PacketCodec;
 use crate::core::packet::Packet;
-use crate::error::Result;
+use crate::error::{ProtocolError, Result};
 use crate::protocol::message::Message;
 use crate::transport::session_cache::SessionCache;
 use crate::transport::tls::TlsClientConfig;
@@ -48,7 +49,6 @@ impl TlsClient {
     ///     Some(Arc::new(cache))
     /// ).await?;
     /// ```
-    #[instrument(skip(config, session_cache))]
     pub async fn connect_with_session(
         addr: &str,
         config: TlsClientConfig,
@@ -58,7 +58,13 @@ impl TlsClient {
         let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(tls_config));
 
         let stream = TcpStream::connect(addr).await?;
-        let domain = config.server_name()?;
+
+        // Create ServerName from owned string to ensure 'static lifetime
+        // Note: Box::leak() is used here to satisfy tokio_rustls' 'static requirement
+        let server_name_str = config.server_name_string();
+        let domain_static: &'static str = Box::leak(server_name_str.into_boxed_str());
+        let domain = ServerName::try_from(domain_static)
+            .map_err(|_| ProtocolError::TlsError("Invalid server name".into()))?;
 
         let tls_stream = connector.connect(domain, stream).await?;
         let framed = Framed::new(tls_stream, PacketCodec);

@@ -21,9 +21,9 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::client::danger::{ServerCertVerified, ServerCertVerifier};
-use rustls::{ClientConfig, RootCertStore, ServerConfig};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, ServerConfig};
 use rustls_pemfile::{certs, pkcs8_private_keys};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::client::TlsStream as ClientTlsStream;
@@ -67,6 +67,24 @@ impl ServerCertVerifier for CertificateFingerprint {
         }
     }
 
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
         // Accept common signature schemes
         vec![
@@ -92,6 +110,24 @@ impl ServerCertVerifier for AcceptAnyServerCert {
         Ok(ServerCertVerified::assertion())
     }
 
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
         vec![
             rustls::SignatureScheme::RSA_PKCS1_SHA256,
@@ -111,11 +147,11 @@ fn load_private_key(reader: &mut BufReader<File>) -> Result<PrivateKeyDer<'stati
 
     // pkcs8_private_keys returns an iterator of Results
     let keys: std::result::Result<Vec<_>, _> = pkcs8_private_keys(reader).collect();
-    let keys = keys
-        .map_err(|_| ProtocolError::TlsError("Failed to parse PKCS8 private key".into()))?;
+    let keys =
+        keys.map_err(|_| ProtocolError::TlsError("Failed to parse PKCS8 private key".into()))?;
 
     if !keys.is_empty() {
-        return Ok(keys[0].clone_key());
+        return Ok(PrivateKeyDer::Pkcs8(keys[0].clone_key()));
     }
 
     // Note: Add support for other key formats like RSA or EC if needed
@@ -264,9 +300,9 @@ impl TlsServerConfig {
         }
 
         // Create a server configuration with safe defaults (TLS 1.2+, modern ciphersuites)
-        let config_builder = ServerConfig::builder_with_provider(
-            std::sync::Arc::new(rustls::crypto::ring::default_provider())
-        )
+        let config_builder = ServerConfig::builder_with_provider(std::sync::Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
         .with_safe_default_protocol_versions()
         .map_err(|_| ProtocolError::TlsError("Failed to configure TLS protocol versions".into()))?;
 
@@ -284,31 +320,43 @@ impl TlsServerConfig {
                 ProtocolError::TlsError(format!("Failed to open client CA file: {e}"))
             })?;
             let mut client_ca_reader = BufReader::new(client_ca_file);
-            let client_ca_certs: std::result::Result<Vec<_>, _> = certs(&mut client_ca_reader).collect();
-            let client_ca_certs: Vec<CertificateDer<'static>> = client_ca_certs
-                .map_err(|_| ProtocolError::TlsError("Failed to parse client CA certificate".into()))?;
+            let client_ca_certs: std::result::Result<Vec<_>, _> =
+                certs(&mut client_ca_reader).collect();
+            let client_ca_certs: Vec<CertificateDer<'static>> = client_ca_certs.map_err(|_| {
+                ProtocolError::TlsError("Failed to parse client CA certificate".into())
+            })?;
 
             if client_ca_certs.is_empty() {
-                return Err(ProtocolError::TlsError("No client CA certificates found".into()));
+                return Err(ProtocolError::TlsError(
+                    "No client CA certificates found".into(),
+                ));
             }
 
             // Create client cert verifier
             let mut client_root_store = RootCertStore::empty();
-            for cert in &client_ca_certs {
+            for cert in client_ca_certs {
                 client_root_store.add(cert).map_err(|e| {
                     ProtocolError::TlsError(format!("Failed to add client CA cert: {e}"))
                 })?;
             }
 
             // Create client authentication verifier using WebPkiClientVerifier
-            let client_auth = rustls::server::WebPkiClientVerifier::new(client_root_store);
+            let client_auth = rustls::server::WebPkiClientVerifier::builder(std::sync::Arc::new(
+                client_root_store,
+            ))
+            .build()
+            .map_err(|e| {
+                ProtocolError::TlsError(format!("Failed to build client verifier: {e}"))
+            })?;
 
             // Create new config builder with client auth
-            let new_builder = ServerConfig::builder_with_provider(
-                std::sync::Arc::new(rustls::crypto::ring::default_provider())
-            )
+            let new_builder = ServerConfig::builder_with_provider(std::sync::Arc::new(
+                rustls::crypto::ring::default_provider(),
+            ))
             .with_safe_default_protocol_versions()
-            .map_err(|_| ProtocolError::TlsError("Failed to configure TLS protocol versions".into()))?;
+            .map_err(|_| {
+                ProtocolError::TlsError("Failed to configure TLS protocol versions".into())
+            })?;
             let new_cert_builder = new_builder.with_client_cert_verifier(client_auth);
 
             // Build a new config with certificates and client auth
@@ -460,9 +508,9 @@ impl TlsClientConfig {
     /// Build secure client config with system root CAs
     fn build_secure_client_config(&self) -> Result<ClientConfig> {
         let root_store = self.load_system_root_certificates()?;
-        let builder = ClientConfig::builder_with_provider(
-            std::sync::Arc::new(rustls::crypto::ring::default_provider())
-        )
+        let builder = ClientConfig::builder_with_provider(std::sync::Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
         .with_safe_default_protocol_versions()
         .map_err(|_| ProtocolError::TlsError("Failed to configure TLS protocol versions".into()))?
         .with_root_certificates(root_store);
@@ -483,13 +531,15 @@ impl TlsClientConfig {
 
     /// Build insecure client config with custom verifier
     fn build_insecure_client_config(&self) -> Result<ClientConfig> {
-        let builder = ClientConfig::builder_with_provider(
-            std::sync::Arc::new(rustls::crypto::ring::default_provider())
-        )
+        let builder = ClientConfig::builder_with_provider(std::sync::Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
         .with_safe_default_protocol_versions()
         .map_err(|_| ProtocolError::TlsError("Failed to configure TLS protocol versions".into()))?;
         let verifier = self.create_custom_verifier();
-        let custom_builder = builder.with_custom_certificate_verifier(verifier);
+        let custom_builder = builder
+            .dangerous()
+            .with_custom_certificate_verifier(verifier);
 
         // Apply client auth directly
         if let (Some(client_cert_path), Some(client_key_path)) =
@@ -542,7 +592,8 @@ impl TlsClientConfig {
         // Load certificate
         let cert_file = File::open(cert_path).map_err(ProtocolError::Io)?;
         let mut cert_reader = BufReader::new(cert_file);
-        let certs_result: std::result::Result<Vec<_>, _> = rustls_pemfile::certs(&mut cert_reader).collect();
+        let certs_result: std::result::Result<Vec<_>, _> =
+            rustls_pemfile::certs(&mut cert_reader).collect();
         let certs: Vec<CertificateDer<'static>> = certs_result
             .map_err(|_| ProtocolError::TlsError("Failed to parse client certificate".into()))?;
 
@@ -561,9 +612,14 @@ impl TlsClientConfig {
     }
 
     /// Get the server name as a rustls::ServerName
-    pub fn server_name(&self) -> Result<ServerName> {
+    pub fn server_name(&self) -> Result<ServerName<'_>> {
         ServerName::try_from(self.server_name.as_str())
             .map_err(|_| ProtocolError::TlsError("Invalid server name".into()))
+    }
+
+    /// Get the server name as an owned String
+    pub fn server_name_string(&self) -> String {
+        self.server_name.clone()
     }
 }
 
@@ -639,7 +695,6 @@ where
 }
 
 /// Connect to a TLS server
-#[instrument(skip(config), fields(address=%addr))]
 pub async fn connect(
     addr: &str,
     config: TlsClientConfig,
@@ -648,7 +703,13 @@ pub async fn connect(
     let connector = TlsConnector::from(tls_config);
 
     let stream = TcpStream::connect(addr).await?;
-    let domain = config.server_name()?;
+
+    // Create ServerName from owned string to ensure 'static lifetime
+    // Note: Box::leak() is used here to satisfy tokio_rustls' 'static requirement
+    let server_name_str = config.server_name_string();
+    let domain_static: &'static str = Box::leak(server_name_str.into_boxed_str());
+    let domain = ServerName::try_from(domain_static)
+        .map_err(|_| ProtocolError::TlsError("Invalid server name".into()))?;
 
     let tls_stream = connector
         .connect(domain, stream)
