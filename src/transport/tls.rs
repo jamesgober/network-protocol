@@ -190,7 +190,10 @@ impl TlsServerConfig {
             .map_err(|_| ProtocolError::TlsError("Failed to parse certificate".into()))?;
 
         // Convert to rustls Certificate type
-        let cert_chain: Vec<Certificate> = cert_chain.into_iter().map(Certificate).collect();
+        let cert_chain: Vec<Certificate> = cert_chain
+            .into_iter()
+            .map(|cert| Certificate(cert.as_ref().to_vec()))
+            .collect();
 
         // Load private key
         let key_file = File::open(&self.key_path)
@@ -205,7 +208,7 @@ impl TlsServerConfig {
         }
 
         // Convert to rustls PrivateKey
-        let private_key = PrivateKey(keys[0].clone());
+        let private_key = PrivateKey(keys[0].as_ref().to_vec());
 
         // Validate TLS versions if specified
         // Note: In rustls 0.21, with_safe_defaults() restricts to TLS 1.2+ (best practice)
@@ -260,7 +263,10 @@ impl TlsServerConfig {
 
             // Convert to rustls Certificate type
             let client_ca_certs: Vec<Certificate> =
-                client_ca_certs.into_iter().map(Certificate).collect();
+                client_ca_certs
+                    .into_iter()
+                    .map(|cert| Certificate(cert.as_ref().to_vec()))
+                    .collect();
 
             // Create client cert verifier
             let mut client_root_store = RootCertStore::empty();
@@ -406,7 +412,7 @@ impl TlsClientConfig {
             .map_err(|_| ProtocolError::TlsError("Failed to parse PKCS8 private key".into()))?;
 
         if !keys.is_empty() {
-            return Ok(PrivateKey(keys[0].clone()));
+            return Ok(PrivateKey(keys[0].as_ref().to_vec()));
         }
 
         // Note: Add support for other key formats like RSA or EC if needed
@@ -542,7 +548,10 @@ impl TlsClientConfig {
         let mut key_reader = BufReader::new(key_file);
         let key = Self::load_private_key(&mut key_reader)?;
 
-        let cert_chain = certs.into_iter().map(Certificate).collect();
+        let cert_chain = certs
+            .into_iter()
+            .map(|cert| Certificate(cert.as_ref().to_vec()))
+            .collect();
         Ok((cert_chain, key))
     }
 
