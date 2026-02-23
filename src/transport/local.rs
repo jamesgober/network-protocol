@@ -317,9 +317,7 @@ fn convert_to_pipe_name(path: &str) -> String {
     }
 
     // Extract a meaningful name from the path
-    let name = path
-        .trim_start_matches('/')
-        .replace(['/', '\\'], "_");
+    let name = path.trim_start_matches('/').replace(['/', '\\'], "_");
 
     // Use a default if empty
     let name = if name.is_empty() {
