@@ -21,7 +21,7 @@ Performance-focused release with adaptive compression, buffer pooling, zero-allo
 - Global atomic metrics for monitoring handshakes, messages, connections, and errors
 - TLS session cache for 1.3 session resumption with automatic TTL-based expiration — ~50-70% reconnection latency reduction
 - ALPN support in TLS server configuration
-- QUIC transport placeholder module with interface definitions
+- QUIC transport module with interface definitions for future implementation
 - Error constants module for zero-allocation error propagation
 
 ### Improved
