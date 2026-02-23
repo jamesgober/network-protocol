@@ -8,15 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- Updated TLS module to use rustls-pemfile 2.0 API: functions now return iterators that must be collected before error handling
+- Updated TLS module to work with iterator-based return values from rustls-pemfile (collecting iterator results before error handling)
 
 ### Security
 - Upgraded `bytes` from 1.5 to 1.11 to fix integer overflow vulnerability in `BytesMut::reserve` (RUSTSEC-2026-0007)
 - Upgraded `time` to 0.3.47 to fix denial of service vulnerability via stack exhaustion (RUSTSEC-2026-0009)
-- Upgraded `rustls-pemfile` from 1.0 to 2.0 to address unmaintained crate warning
 
-### Removed
-- Removed dependency on unmaintained `bincode` 1.3.3 (RUSTSEC-2025-0141) — still in dependencies as it's required by existing code paths
+### Known Issues
+- `rustls-pemfile` 1.0.4 is unmaintained (RUSTSEC-2025-0134) — rustls-pemfile 2.0+ requires rustls 0.22+, incompatible with current rustls 0.21. Upgrade path to rustls 0.22 tracked for future release.
+- `bincode` 1.3.3 is unmaintained (RUSTSEC-2025-0141) — still required by existing code paths
 
 ## [1.1.0] - 2026-01-30
 

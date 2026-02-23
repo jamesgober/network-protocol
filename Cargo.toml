@@ -93,7 +93,7 @@ toml = "0.8"
 rustls = { version = "0.21", features = ["dangerous_configuration"] }
 tokio-rustls = "0.24"
 rcgen = { version = "0.14.5", features = ["pem"] }
-rustls-pemfile = "2.0"
+rustls-pemfile = "1.0"
 rustls-native-certs = "0.6"
 time = "0.3.47"
 
