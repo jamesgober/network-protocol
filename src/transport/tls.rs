@@ -21,8 +21,9 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
-use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName};
-use rustls::{ClientConfig, PrivateKeyDer, RootCertStore, ServerConfig};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+use rustls::client::danger::{ServerCertVerified, ServerCertVerifier};
+use rustls::{ClientConfig, RootCertStore, ServerConfig};
 use rustls_pemfile::{certs, pkcs8_private_keys};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::client::TlsStream as ClientTlsStream;
@@ -37,20 +38,20 @@ use crate::error::{ProtocolError, Result};
 use futures::{SinkExt, StreamExt};
 
 // Custom certificate verifiers
+#[derive(Debug)]
 struct CertificateFingerprint {
     fingerprint: Vec<u8>,
 }
 
-impl rustls::client::ServerCertVerifier for CertificateFingerprint {
+impl ServerCertVerifier for CertificateFingerprint {
     fn verify_server_cert(
         &self,
         end_entity: &CertificateDer<'_>,
         _intermediates: &[CertificateDer<'_>],
         _server_name: &ServerName,
-        _scts: &mut dyn Iterator<Item = &[u8]>,
         _ocsp_response: &[u8],
-        _now: std::time::SystemTime,
-    ) -> std::result::Result<rustls::client::ServerCertVerified, rustls::Error> {
+        _now: UnixTime,
+    ) -> std::result::Result<ServerCertVerified, rustls::Error> {
         use sha2::{Digest, Sha256};
 
         let mut hasher = Sha256::new();
@@ -58,7 +59,7 @@ impl rustls::client::ServerCertVerifier for CertificateFingerprint {
         let hash = hasher.finalize();
 
         if hash.as_slice() == self.fingerprint.as_slice() {
-            Ok(rustls::client::ServerCertVerified::assertion())
+            Ok(ServerCertVerified::assertion())
         } else {
             Err(rustls::Error::General(
                 "Pinned certificate hash mismatch".into(),
@@ -76,19 +77,19 @@ impl rustls::client::ServerCertVerifier for CertificateFingerprint {
     }
 }
 
+#[derive(Debug)]
 struct AcceptAnyServerCert;
 
-impl rustls::client::ServerCertVerifier for AcceptAnyServerCert {
+impl ServerCertVerifier for AcceptAnyServerCert {
     fn verify_server_cert(
         &self,
         _end_entity: &CertificateDer<'_>,
         _intermediates: &[CertificateDer<'_>],
         _server_name: &ServerName,
-        _scts: &mut dyn Iterator<Item = &[u8]>,
         _ocsp_response: &[u8],
-        _now: std::time::SystemTime,
-    ) -> std::result::Result<rustls::client::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::ServerCertVerified::assertion())
+        _now: UnixTime,
+    ) -> std::result::Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
     }
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
@@ -98,6 +99,30 @@ impl rustls::client::ServerCertVerifier for AcceptAnyServerCert {
             rustls::SignatureScheme::ED25519,
         ]
     }
+}
+
+/// Helper function to load a private key from PKCS8 format
+fn load_private_key(reader: &mut BufReader<File>) -> Result<PrivateKeyDer<'static>> {
+    // Try to load PKCS8 keys
+    // Seek to beginning of file first
+    reader
+        .seek(std::io::SeekFrom::Start(0))
+        .map_err(ProtocolError::Io)?;
+
+    // pkcs8_private_keys returns an iterator of Results
+    let keys: std::result::Result<Vec<_>, _> = pkcs8_private_keys(reader).collect();
+    let keys = keys
+        .map_err(|_| ProtocolError::TlsError("Failed to parse PKCS8 private key".into()))?;
+
+    if !keys.is_empty() {
+        return Ok(keys[0].clone_key());
+    }
+
+    // Note: Add support for other key formats like RSA or EC if needed
+
+    Err(ProtocolError::TlsError(
+        "No supported private key format found".into(),
+    ))
 }
 
 /// TLS protocol version
@@ -202,28 +227,22 @@ impl TlsServerConfig {
         let cert_file = File::open(&self.cert_path)
             .map_err(|e| ProtocolError::TlsError(format!("Failed to open cert file: {e}")))?;
         let mut cert_reader = BufReader::new(cert_file);
-        let cert_chain = certs(&mut cert_reader)
+        let cert_chain: std::result::Result<Vec<_>, _> = certs(&mut cert_reader).collect();
+        let cert_chain: Vec<CertificateDer<'static>> = cert_chain
             .map_err(|_| ProtocolError::TlsError("Failed to parse certificate".into()))?;
 
-        // Convert to rustls Certificate type
-        let cert_chain: Vec<Certificate> = cert_chain.into_iter().map(Certificate).collect();
+        if cert_chain.is_empty() {
+            return Err(ProtocolError::TlsError("No certificates found".into()));
+        }
 
         // Load private key
         let key_file = File::open(&self.key_path)
             .map_err(|e| ProtocolError::TlsError(format!("Failed to open key file: {e}")))?;
         let mut key_reader = BufReader::new(key_file);
-        let keys = pkcs8_private_keys(&mut key_reader)
-            .map_err(|_| ProtocolError::TlsError("Failed to parse private key".into()))?;
-
-        if keys.is_empty() {
-            return Err(ProtocolError::TlsError("No private keys found".into()));
-        }
-
-        // Convert to rustls PrivateKey
-        let private_key = PrivateKey(keys[0].clone());
+        let private_key = load_private_key(&mut key_reader)?;
 
         // Validate TLS versions if specified
-        // Note: In rustls 0.21, with_safe_defaults() restricts to TLS 1.2+ (best practice)
+        // Note: In rustls 0.22, with_safe_defaults() restricts to TLS 1.2+ (best practice)
         if let Some(versions) = &self.tls_versions {
             let mut has_tls13 = false;
             let mut has_tls12 = false;
@@ -245,19 +264,17 @@ impl TlsServerConfig {
         }
 
         // Create a server configuration with safe defaults (TLS 1.2+, modern ciphersuites)
-        let config_builder = ServerConfig::builder().with_safe_defaults();
-
-        // Note: rustls 0.21 doesn't expose API to change ciphersuites after builder creation.
-        // with_safe_defaults() already provides excellent defaults:
-        // - TLS 1.3: CHACHA20_POLY1305, AES_128_GCM, AES_256_GCM
-        // - TLS 1.2: same + some legacy suites
-        // Custom cipher suite restriction requires building at compile time.
+        let config_builder = ServerConfig::builder_with_provider(
+            std::sync::Arc::new(rustls::crypto::ring::default_provider())
+        )
+        .with_safe_default_protocol_versions()
+        .map_err(|_| ProtocolError::TlsError("Failed to configure TLS protocol versions".into()))?;
 
         let cert_builder = config_builder.with_no_client_auth();
 
         // Build config with certificates
         let mut config = cert_builder
-            .with_single_cert(cert_chain.clone(), private_key.clone())
+            .with_single_cert(cert_chain.clone(), private_key.clone_key())
             .map_err(|e| ProtocolError::TlsError(format!("TLS error: {e}")))?;
 
         // Configure client authentication if required (mTLS)
@@ -267,13 +284,13 @@ impl TlsServerConfig {
                 ProtocolError::TlsError(format!("Failed to open client CA file: {e}"))
             })?;
             let mut client_ca_reader = BufReader::new(client_ca_file);
-            let client_ca_certs = certs(&mut client_ca_reader).map_err(|_| {
-                ProtocolError::TlsError("Failed to parse client CA certificate".into())
-            })?;
+            let client_ca_certs: std::result::Result<Vec<_>, _> = certs(&mut client_ca_reader).collect();
+            let client_ca_certs: Vec<CertificateDer<'static>> = client_ca_certs
+                .map_err(|_| ProtocolError::TlsError("Failed to parse client CA certificate".into()))?;
 
-            // Convert to rustls Certificate type
-            let client_ca_certs: Vec<Certificate> =
-                client_ca_certs.into_iter().map(Certificate).collect();
+            if client_ca_certs.is_empty() {
+                return Err(ProtocolError::TlsError("No client CA certificates found".into()));
+            }
 
             // Create client cert verifier
             let mut client_root_store = RootCertStore::empty();
@@ -283,18 +300,20 @@ impl TlsServerConfig {
                 })?;
             }
 
-            // Create client authentication verifier
-            let client_auth = Arc::new(rustls::server::AllowAnyAuthenticatedClient::new(
-                client_root_store,
-            ));
+            // Create client authentication verifier using WebPkiClientVerifier
+            let client_auth = rustls::server::WebPkiClientVerifier::new(client_root_store);
 
             // Create new config builder with client auth
-            let new_builder = ServerConfig::builder().with_safe_defaults();
+            let new_builder = ServerConfig::builder_with_provider(
+                std::sync::Arc::new(rustls::crypto::ring::default_provider())
+            )
+            .with_safe_default_protocol_versions()
+            .map_err(|_| ProtocolError::TlsError("Failed to configure TLS protocol versions".into()))?;
             let new_cert_builder = new_builder.with_client_cert_verifier(client_auth);
 
             // Build a new config with certificates and client auth
             config = new_cert_builder
-                .with_single_cert(cert_chain, private_key)
+                .with_single_cert(cert_chain, private_key.clone_key())
                 .map_err(|e| ProtocolError::TlsError(format!("TLS error with client auth: {e}")))?;
 
             debug!("mTLS enabled with client certificate verification required");
@@ -310,6 +329,14 @@ impl TlsServerConfig {
         }
 
         Ok(config)
+    }
+
+    /// Calculate SHA-256 hash for a certificate to use with pinning
+    pub fn calculate_cert_hash(cert: &CertificateDer<'_>) -> Vec<u8> {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(cert.as_ref());
+        hasher.finalize().to_vec()
     }
 }
 
@@ -397,37 +424,6 @@ impl TlsClientConfig {
         self
     }
 
-    /// Calculate SHA-256 hash for a certificate to use with pinning
-    pub fn calculate_cert_hash(cert: &Certificate) -> Vec<u8> {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(&cert.0);
-        hasher.finalize().to_vec()
-    }
-
-    /// Helper method to load a private key from PKCS8 format
-    fn load_private_key(reader: &mut BufReader<File>) -> Result<PrivateKey> {
-        // Try to load PKCS8 keys
-        // Seek to beginning of file first
-        reader
-            .seek(std::io::SeekFrom::Start(0))
-            .map_err(ProtocolError::Io)?;
-
-        // We need to use pkcs8_private_keys on the BufReader directly since it implements BufRead
-        let keys = pkcs8_private_keys(reader)
-            .map_err(|_| ProtocolError::TlsError("Failed to parse PKCS8 private key".into()))?;
-
-        if !keys.is_empty() {
-            return Ok(PrivateKey(keys[0].clone()));
-        }
-
-        // Note: Add support for other key formats like RSA or EC if needed
-
-        Err(ProtocolError::TlsError(
-            "No supported private key format found".into(),
-        ))
-    }
-
     /// Load the TLS client configuration
     pub fn load_client_config(&self) -> Result<ClientConfig> {
         self.log_tls_version_info();
@@ -464,9 +460,12 @@ impl TlsClientConfig {
     /// Build secure client config with system root CAs
     fn build_secure_client_config(&self) -> Result<ClientConfig> {
         let root_store = self.load_system_root_certificates()?;
-        let builder = ClientConfig::builder()
-            .with_safe_defaults()
-            .with_root_certificates(root_store);
+        let builder = ClientConfig::builder_with_provider(
+            std::sync::Arc::new(rustls::crypto::ring::default_provider())
+        )
+        .with_safe_default_protocol_versions()
+        .map_err(|_| ProtocolError::TlsError("Failed to configure TLS protocol versions".into()))?
+        .with_root_certificates(root_store);
 
         // Apply client auth directly
         if let (Some(client_cert_path), Some(client_key_path)) =
@@ -484,7 +483,11 @@ impl TlsClientConfig {
 
     /// Build insecure client config with custom verifier
     fn build_insecure_client_config(&self) -> Result<ClientConfig> {
-        let builder = ClientConfig::builder().with_safe_defaults();
+        let builder = ClientConfig::builder_with_provider(
+            std::sync::Arc::new(rustls::crypto::ring::default_provider())
+        )
+        .with_safe_default_protocol_versions()
+        .map_err(|_| ProtocolError::TlsError("Failed to configure TLS protocol versions".into()))?;
         let verifier = self.create_custom_verifier();
         let custom_builder = builder.with_custom_certificate_verifier(verifier);
 
@@ -511,7 +514,7 @@ impl TlsClientConfig {
             .map_err(|e| ProtocolError::TlsError(format!("Failed to load native certs: {e}")))?;
 
         for cert in native_certs {
-            root_store.add(&Certificate(cert.0)).map_err(|e| {
+            root_store.add(cert).map_err(|e| {
                 ProtocolError::TlsError(format!("Failed to add cert to root store: {e}"))
             })?;
         }
@@ -520,7 +523,7 @@ impl TlsClientConfig {
     }
 
     /// Create custom certificate verifier (pinning or accept-any)
-    fn create_custom_verifier(&self) -> Arc<dyn rustls::client::ServerCertVerifier> {
+    fn create_custom_verifier(&self) -> Arc<dyn ServerCertVerifier> {
         if let Some(hash) = &self.pinned_cert_hash {
             Arc::new(CertificateFingerprint {
                 fingerprint: hash.clone(),
@@ -535,11 +538,12 @@ impl TlsClientConfig {
         &self,
         cert_path: &str,
         key_path: &str,
-    ) -> Result<(Vec<Certificate>, PrivateKey)> {
+    ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
         // Load certificate
         let cert_file = File::open(cert_path).map_err(ProtocolError::Io)?;
         let mut cert_reader = BufReader::new(cert_file);
-        let certs = rustls_pemfile::certs(&mut cert_reader)
+        let certs_result: std::result::Result<Vec<_>, _> = rustls_pemfile::certs(&mut cert_reader).collect();
+        let certs: Vec<CertificateDer<'static>> = certs_result
             .map_err(|_| ProtocolError::TlsError("Failed to parse client certificate".into()))?;
 
         if certs.is_empty() {
@@ -551,10 +555,9 @@ impl TlsClientConfig {
         // Load private key
         let key_file = File::open(key_path).map_err(ProtocolError::Io)?;
         let mut key_reader = BufReader::new(key_file);
-        let key = Self::load_private_key(&mut key_reader)?;
+        let key = load_private_key(&mut key_reader)?;
 
-        let cert_chain = certs.into_iter().map(Certificate).collect();
-        Ok((cert_chain, key))
+        Ok((certs, key))
     }
 
     /// Get the server name as a rustls::ServerName
