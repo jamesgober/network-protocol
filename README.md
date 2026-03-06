@@ -97,7 +97,7 @@
 
 <p>
     <b>REPS</b> (<i>Rust Efficiency &amp; Performance Standards</i>)
-    <br>⚡ <a href="https://github.com/jamesgober/rust-performance-collection"><strong>Rust Performance Collection</strong></a>
+    <br>⚡ <a href="https://github.com/jamesgober/rust-collection"><strong>Rust Collection</strong></a>
 </p>
 
 <br>
