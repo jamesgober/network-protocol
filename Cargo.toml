@@ -7,7 +7,7 @@ readme = "README.md"
 license = "Apache-2.0"
 
 authors = [
-    "James Gober <code@jamesgober.dev>"
+    "James Gober <me@jamesgober.com>"
 ]
 
 description = "Secure, high-performance protocol core with backpressure control, structured logging, timeout handling, TLS support, and comprehensive benchmarking for robust Rust networked applications and services."
