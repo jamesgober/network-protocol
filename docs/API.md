@@ -1,5 +1,5 @@
 <div align="center">
-    <img width="120px" height="auto" src="https://raw.githubusercontent.com/jamesgober/jamesgober/main/media/icons/hexagon-3.svg" alt="Triple Hexagon">
+    <img width="99" alt="Rust logo" src="https://raw.githubusercontent.com/jamesgober/rust-collection/72baabd71f00e14aa9184efcb16fa3deddda3a0a/assets/rust-logo.svg">
     <h1>
         <strong>network-protocol</strong>
         <sup>
@@ -326,7 +326,7 @@ let response = dispatcher.dispatch(&Message::Ping)?;
 ### Install Manually
 ```toml
 [dependencies]
-network-protocol = "1.2.0"
+network-protocol = "1.2.1"
 ```
 
 ### Install Using Cargo

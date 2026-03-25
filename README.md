@@ -1,5 +1,5 @@
 <div align="center">
-        <img width="120px" height="auto" src="https://raw.githubusercontent.com/jamesgober/jamesgober/main/media/icons/hexagon-3.svg" alt="Triple Hexagon">
+        <img width="99" alt="Rust logo" src="https://raw.githubusercontent.com/jamesgober/rust-collection/72baabd71f00e14aa9184efcb16fa3deddda3a0a/assets/rust-logo.svg">
     <h1>network-protocol</h1>
     <br>
     <div>
@@ -17,7 +17,7 @@
     A <strong>battle-hardened, security-first</strong> network protocol implementation for Rust. Built for production systems requiring both high performance and strong security guarantees. Features comprehensive DoS protection, memory safety guarantees, and extensive testing infrastructure (214+ tests, fuzzing, stress tests).
 </p>
 <p>
-    Designed for <strong>zero-compromise reliability</strong> in high-load environments with built-in backpressure control, automatic connection health monitoring, and graceful degradation. The fastest, most efficient version yet with v1.2.0 delivering measurable performance gains through connection pooling, request multiplexing, adaptive compression, and zero-allocation optimizations.
+    Designed for <strong>zero-compromise reliability</strong> in high-load environments with built-in backpressure control, automatic connection health monitoring, and graceful degradation. The fastest, most efficient version yet with v1.2.1 delivering measurable performance gains through connection pooling, request multiplexing, adaptive compression, and zero-allocation optimizations.
 </p>
 
 ## Security Guarantees
@@ -107,7 +107,7 @@
 Add the library to your `Cargo.toml`:
 ```toml
 [dependencies]
-network-protocol = "1.2.0"
+network-protocol = "1.2.1"
 ```
 
 <br>
@@ -331,7 +331,7 @@ Run microbenchmarks (Criterion):
 cargo bench
 ```
 
-**Performance Highlights (v1.2.0 baseline):**
+**Performance Highlights (v1.2.1 baseline):**
 - **Packet encode:** 1.64 GiB/s @ 1MB
 - **Packet decode:** 4.90 GiB/s @ 1MB
 - **LZ4 compress:** 8.33 GiB/s @ 1MB

@@ -89,7 +89,7 @@ Network-protocol implements comprehensive memory zeroization for all cryptograph
 | **HIPAA** | Protected Health Information (PHI) must be zeroed from memory | ✅ Session keys zeroized |
 | **PCI-DSS** | Cardholder data must not remain in memory after use | ✅ All crypto material cleared on drop |
 | **GDPR** | Personal data must be securely erased when no longer needed | ✅ Handshake state zeroized |
-| **SOC 2** | Cryptographic keys must be protected in memory | ✅ Comprehensive zeroization audit (v1.2.0) |
+| **SOC 2** | Cryptographic keys must be protected in memory | ✅ Comprehensive zeroization audit (v1.2.1) |
 | **NIST SP 800-88** | Data sanitization guidelines | ✅ Memory cleared before deallocation |
 
 ### Audit Trail
@@ -101,6 +101,10 @@ Network-protocol implements comprehensive memory zeroization for all cryptograph
   - Verified all `x25519` shared secrets cleared via `diffie_hellman()`
   - Documented zeroization guarantees for compliance certification
   - Added `Crypto::generate_key()` with caller-responsible zeroization contract
+- **v1.2.1**: Security dependency maintenance:
+  - Upgraded `lz4_flex` to 0.11.6 (RUSTSEC-2026-0041)
+  - Upgraded TLS stack to `rustls` 0.23 and `tokio-rustls` 0.26
+  - Resolved `rustls-webpki` advisory via 0.103.10 (RUSTSEC-2026-0049)
 
 ### Verification
 

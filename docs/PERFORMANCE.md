@@ -1,5 +1,5 @@
 <div align="center">
-    <img width="120px" height="auto" src="https://raw.githubusercontent.com/jamesgober/jamesgober/main/media/icons/hexagon-3.svg" alt="Triple Hexagon">
+    <img width="99" alt="Rust logo" src="https://raw.githubusercontent.com/jamesgober/rust-collection/72baabd71f00e14aa9184efcb16fa3deddda3a0a/assets/rust-logo.svg">
     <h1>
         <strong>network-protocol</strong>
         <sup>
@@ -25,7 +25,7 @@
 
 ## Microbenchmarks (Criterion)
 
-The following microbenchmarks were collected on Windows (MSVC) with `cargo bench` (v1.2.0).
+The following microbenchmarks were collected on Windows (MSVC) with `cargo bench` (v1.2.1).
 
 ### Packet Encode/Decode
 
@@ -37,7 +37,7 @@ The following microbenchmarks were collected on Windows (MSVC) with `cargo bench
 | 64KB | 8.67 GiB/s | 18.85 GiB/s |
 | 1MB | **1.64 GiB/s** | **4.90 GiB/s** |
 
-**Key Improvements (v1.2.0 baseline):**
+**Key Improvements (v1.2.1 baseline):**
 - Large payload encoding improved by buffer pooling
 - Consistent high-speed decoding across all payload sizes
 
@@ -61,7 +61,7 @@ The following microbenchmarks were collected on Windows (MSVC) with `cargo bench
 | 64KB | 959.24 MiB/s | 8.59 GiB/s |
 | 1MB | **3.05 GiB/s** | **4.44 GiB/s** |
 
-**Key Improvements (v1.2.0 baseline):**
+**Key Improvements (v1.2.1 baseline):**
 - Zstd compression improvements from entropy-based bypass
 - Zstd decompression improvements from buffer pooling and adaptive selection
 - LZ4 compression improvements on large payloads
@@ -124,7 +124,7 @@ See [zero-copy research](./notes/zero-copy.md) for detailed analysis.
 
 ## Version Performance History
 
-### v1.2.0 (Current)
+### v1.2.1 (Current)
 **Measured Performance Gains:**
 - **+26%** large payload encoding throughput (buffer pooling)
 - **+56%** Zstd compression speed (adaptive entropy-based bypass)

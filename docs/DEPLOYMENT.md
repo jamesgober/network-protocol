@@ -840,7 +840,7 @@ spec:
     spec:
       containers:
       - name: server
-        image: network-protocol:1.2.0
+        image: network-protocol:1.2.1
         ports:
         - containerPort: 8443
         resources:

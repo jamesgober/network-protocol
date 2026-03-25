@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-03-25
+
+### Security
+- Upgraded `lz4_flex` from 0.11.5 to 0.11.6 to address RUSTSEC-2026-0041 (block decompression memory disclosure risk)
+- Upgraded TLS dependency line to `rustls` 0.23.x and `tokio-rustls` 0.26.x, resolving RUSTSEC-2026-0049 via `rustls-webpki` 0.103.10
+
+### Changed
+- Enabled the `ring` feature explicitly on `rustls` to keep the existing provider-based TLS builder path intact
+- Updated version references in documentation and release metadata to 1.2.1
+
+### Known Issues
+- `bincode` 1.3.3 remains unmaintained (RUSTSEC-2025-0141) and is still tracked for migration
+- `rustls-pemfile` 2.2.0 remains unmaintained (RUSTSEC-2025-0134) and is still required for PEM parsing paths
+
 ## [1.2.0] - 2026-02-23
 
 ### Fixed
@@ -247,7 +261,8 @@ Performance-focused release with adaptive compression, buffer pooling, zero-allo
 - Cross-platform CI testing workflow
 
 
-[Unreleased]: https://github.com/jamesgober/network-protocol/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/jamesgober/network-protocol/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/jamesgober/network-protocol/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/jamesgober/network-protocol/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/jamesgober/network-protocol/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/jamesgober/network-protocol/compare/v1.0.1...v1.1.0
