@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-10-08
+
+### Security
+- Raised the `rustls` floor to 0.23.45 to address RUSTSEC-2026-0285 (TLS 1.3 handshake messages were accepted across encryption levels). This version of `rustls` requires `rustls-webpki` 0.103.14 or later, so downstream builds can no longer resolve a vulnerable webpki.
+- Upgraded `rustls-webpki` from 0.103.10 to 0.103.15 to address RUSTSEC-2026-0098 and RUSTSEC-2026-0099 (incorrectly accepted name constraints) and RUSTSEC-2026-0104 (reachable panic in CRL parsing)
+- Raised the `rand` floor to 0.9.3 to address RUSTSEC-2026-0097 (unsound `rand::rng()` with a custom logger)
+- Upgraded `crossbeam-epoch` from 0.9.18 to 0.9.21 in the lockfile (dev dependency via `criterion`) to address RUSTSEC-2026-0204
+- Removed the unmaintained `rustls-pemfile` dependency (RUSTSEC-2025-0134). PEM certificates and PKCS8 keys are now parsed with the `PemObject` API from `rustls-pki-types`. Parsing behaviour and error messages are unchanged.
+
+### Changed
+- Upgraded `rustls-native-certs` from 0.7 to 0.8, which no longer depends on `rustls-pemfile`. Loading system roots still fails if the platform store reports any error, as before.
+- Refreshed `Cargo.lock` and `fuzz/Cargo.lock`
+- Removed the RUSTSEC-2025-0134 ignore from `deny.toml`
+- CI: updated `actions/checkout` from v4 to v7
+
+### Added
+- Test covering PEM loading for server certificates, the mTLS client CA file and client credentials, including rejection of files with the wrong PEM section type
+
+### Known Issues
+- `bincode` 1.3.3 remains unmaintained (RUSTSEC-2025-0141) and is still tracked for migration
+
 ## [1.2.1] - 2026-03-25
 
 ### Security
@@ -261,7 +282,8 @@ Performance-focused release with adaptive compression, buffer pooling, zero-allo
 - Cross-platform CI testing workflow
 
 
-[Unreleased]: https://github.com/jamesgober/network-protocol/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/jamesgober/network-protocol/compare/v1.2.2...HEAD
+[1.2.2]: https://github.com/jamesgober/network-protocol/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/jamesgober/network-protocol/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/jamesgober/network-protocol/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/jamesgober/network-protocol/compare/v1.1.0...v1.1.1

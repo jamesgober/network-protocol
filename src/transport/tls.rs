@@ -22,9 +22,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use rustls::client::danger::{ServerCertVerified, ServerCertVerifier};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+use rustls::pki_types::pem::PemObject;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, ServerConfig};
-use rustls_pemfile::{certs, pkcs8_private_keys};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::client::TlsStream as ClientTlsStream;
 use tokio_rustls::server::TlsStream as ServerTlsStream;
@@ -145,8 +145,9 @@ fn load_private_key(reader: &mut BufReader<File>) -> Result<PrivateKeyDer<'stati
         .seek(std::io::SeekFrom::Start(0))
         .map_err(ProtocolError::Io)?;
 
-    // pkcs8_private_keys returns an iterator of Results
-    let keys: std::result::Result<Vec<_>, _> = pkcs8_private_keys(reader).collect();
+    // Collect every PKCS8 private key section in the PEM input
+    let keys: std::result::Result<Vec<_>, _> =
+        PrivatePkcs8KeyDer::pem_reader_iter(reader).collect();
     let keys =
         keys.map_err(|_| ProtocolError::TlsError("Failed to parse PKCS8 private key".into()))?;
 
@@ -263,7 +264,8 @@ impl TlsServerConfig {
         let cert_file = File::open(&self.cert_path)
             .map_err(|e| ProtocolError::TlsError(format!("Failed to open cert file: {e}")))?;
         let mut cert_reader = BufReader::new(cert_file);
-        let cert_chain: std::result::Result<Vec<_>, _> = certs(&mut cert_reader).collect();
+        let cert_chain: std::result::Result<Vec<_>, _> =
+            CertificateDer::pem_reader_iter(&mut cert_reader).collect();
         let cert_chain: Vec<CertificateDer<'static>> = cert_chain
             .map_err(|_| ProtocolError::TlsError("Failed to parse certificate".into()))?;
 
@@ -321,7 +323,7 @@ impl TlsServerConfig {
             })?;
             let mut client_ca_reader = BufReader::new(client_ca_file);
             let client_ca_certs: std::result::Result<Vec<_>, _> =
-                certs(&mut client_ca_reader).collect();
+                CertificateDer::pem_reader_iter(&mut client_ca_reader).collect();
             let client_ca_certs: Vec<CertificateDer<'static>> = client_ca_certs.map_err(|_| {
                 ProtocolError::TlsError("Failed to parse client CA certificate".into())
             })?;
@@ -560,10 +562,14 @@ impl TlsClientConfig {
     /// Load system root certificates
     fn load_system_root_certificates(&self) -> Result<RootCertStore> {
         let mut root_store = RootCertStore::empty();
-        let native_certs = rustls_native_certs::load_native_certs()
-            .map_err(|e| ProtocolError::TlsError(format!("Failed to load native certs: {e}")))?;
+        let native_certs = rustls_native_certs::load_native_certs();
+        if let Some(e) = native_certs.errors.first() {
+            return Err(ProtocolError::TlsError(format!(
+                "Failed to load native certs: {e}"
+            )));
+        }
 
-        for cert in native_certs {
+        for cert in native_certs.certs {
             root_store.add(cert).map_err(|e| {
                 ProtocolError::TlsError(format!("Failed to add cert to root store: {e}"))
             })?;
@@ -593,7 +599,7 @@ impl TlsClientConfig {
         let cert_file = File::open(cert_path).map_err(ProtocolError::Io)?;
         let mut cert_reader = BufReader::new(cert_file);
         let certs_result: std::result::Result<Vec<_>, _> =
-            rustls_pemfile::certs(&mut cert_reader).collect();
+            CertificateDer::pem_reader_iter(&mut cert_reader).collect();
         let certs: Vec<CertificateDer<'static>> = certs_result
             .map_err(|_| ProtocolError::TlsError("Failed to parse client certificate".into()))?;
 

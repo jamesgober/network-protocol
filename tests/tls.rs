@@ -143,3 +143,34 @@ async fn test_tls_tampering_protection() -> Result<()> {
 
     Ok(())
 }
+
+// PEM loading for server certs, client CA (mTLS) and client credentials
+#[test]
+fn test_tls_pem_loading() -> Result<()> {
+    let (cert_path, key_path) = generate_test_certificates()?;
+
+    // The mTLS client verifier uses the process-level CryptoProvider. Both the
+    // ring and aws-lc-rs rustls features are enabled, so one must be installed.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let server = TlsServerConfig::new(cert_path.clone(), key_path.clone())
+        .with_client_auth(CERT_PATH)
+        .require_client_auth(true);
+    assert!(server.load_server_config().is_ok());
+
+    let client = TlsClientConfig::new("localhost")
+        .insecure()
+        .with_client_certificate(CERT_PATH, KEY_PATH);
+    assert!(client.load_client_config().is_ok());
+
+    // A key file has no CERTIFICATE section and a cert file has no PRIVATE KEY section
+    let swapped = TlsServerConfig::new(key_path, cert_path);
+    assert!(swapped.load_server_config().is_err());
+
+    let swapped_client = TlsClientConfig::new("localhost")
+        .insecure()
+        .with_client_certificate(KEY_PATH, CERT_PATH);
+    assert!(swapped_client.load_client_config().is_err());
+
+    Ok(())
+}

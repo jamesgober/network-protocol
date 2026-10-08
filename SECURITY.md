@@ -105,6 +105,11 @@ Network-protocol implements comprehensive memory zeroization for all cryptograph
   - Upgraded `lz4_flex` to 0.11.6 (RUSTSEC-2026-0041)
   - Upgraded TLS stack to `rustls` 0.23 and `tokio-rustls` 0.26
   - Resolved `rustls-webpki` advisory via 0.103.10 (RUSTSEC-2026-0049)
+- **v1.2.2**: Security dependency maintenance:
+  - Raised `rustls` floor to 0.23.45 (RUSTSEC-2026-0285)
+  - Upgraded `rustls-webpki` to 0.103.15 (RUSTSEC-2026-0098, RUSTSEC-2026-0099, RUSTSEC-2026-0104)
+  - Raised `rand` floor to 0.9.3 (RUSTSEC-2026-0097)
+  - Replaced unmaintained `rustls-pemfile` with `rustls-pki-types` PEM parsing (RUSTSEC-2025-0134)
 
 ### Verification
 

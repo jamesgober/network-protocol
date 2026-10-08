@@ -1,6 +1,6 @@
 [package]
 name = "network-protocol"
-version = "1.2.1"
+version = "1.2.2"
 
 edition = "2021"
 readme = "README.md"
@@ -68,7 +68,7 @@ tracing-appender = "0.2"
 tracing-futures = "0.2"
 
 getrandom = "0.3.3"
-rand = "0.9"
+rand = "0.9.3"
 
 # Cryptographic dependencies
 x25519-dalek = { version = "2.0", features = ["serde"] }
@@ -91,11 +91,10 @@ zstd = "0.13"
 toml = "0.8"
 
 # TLS dependencies
-rustls = { version = "0.23", features = ["ring"] }
+rustls = { version = "0.23.45", features = ["ring"] }
 tokio-rustls = "0.26"
 rcgen = { version = "0.14.5", features = ["pem"] }
-rustls-pemfile = "2.1"
-rustls-native-certs = "0.7"
+rustls-native-certs = "0.8"
 time = "0.3.47"
 
 [dev-dependencies]
