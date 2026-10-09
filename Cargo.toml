@@ -1,6 +1,6 @@
 [package]
 name = "network-protocol"
-version = "1.2.2"
+version = "1.2.3"
 
 edition = "2021"
 readme = "README.md"
@@ -91,13 +91,17 @@ zstd = "0.13"
 toml = "0.8"
 
 # TLS dependencies
-rustls = { version = "0.23.45", features = ["ring"] }
-tokio-rustls = "0.26"
+# Only the ring backend is used; default features would also build aws-lc-rs
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["tls12", "logging"] }
 rcgen = { version = "0.14.5", features = ["pem"] }
 rustls-native-certs = "0.8"
 time = "0.3.47"
 
 [dev-dependencies]
+# Tests build rustls with both the ring and aws-lc-rs backends, as many downstream
+# applications do, so any use of the process-level CryptoProvider panics in tests.
+rustls = { version = "0.23.45", default-features = false, features = ["aws_lc_rs"] }
 serial_test = "2.0"
 criterion = "0.5"
 proptest = "1.4"

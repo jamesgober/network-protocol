@@ -137,6 +137,15 @@ impl ServerCertVerifier for AcceptAnyServerCert {
     }
 }
 
+/// The crypto provider used by every TLS config and verifier in this module.
+///
+/// rustls APIs without a `_with_provider` suffix fall back to the process-level default
+/// provider, which panics when more than one rustls crypto backend is compiled in and
+/// none has been installed. Always pass this provider explicitly instead.
+fn crypto_provider() -> Arc<rustls::crypto::CryptoProvider> {
+    Arc::new(rustls::crypto::ring::default_provider())
+}
+
 /// Helper function to load a private key from PKCS8 format
 fn load_private_key(reader: &mut BufReader<File>) -> Result<PrivateKeyDer<'static>> {
     // Try to load PKCS8 keys
@@ -302,11 +311,11 @@ impl TlsServerConfig {
         }
 
         // Create a server configuration with safe defaults (TLS 1.2+, modern ciphersuites)
-        let config_builder = ServerConfig::builder_with_provider(std::sync::Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .map_err(|_| ProtocolError::TlsError("Failed to configure TLS protocol versions".into()))?;
+        let config_builder = ServerConfig::builder_with_provider(crypto_provider())
+            .with_safe_default_protocol_versions()
+            .map_err(|_| {
+                ProtocolError::TlsError("Failed to configure TLS protocol versions".into())
+            })?;
 
         let cert_builder = config_builder.with_no_client_auth();
 
@@ -342,23 +351,24 @@ impl TlsServerConfig {
                 })?;
             }
 
-            // Create client authentication verifier using WebPkiClientVerifier
-            let client_auth = rustls::server::WebPkiClientVerifier::builder(std::sync::Arc::new(
-                client_root_store,
-            ))
+            // Create client authentication verifier using WebPkiClientVerifier.
+            // The provider is passed explicitly: `WebPkiClientVerifier::builder` uses the
+            // process-level default, which panics when it cannot be chosen automatically.
+            let client_auth = rustls::server::WebPkiClientVerifier::builder_with_provider(
+                Arc::new(client_root_store),
+                crypto_provider(),
+            )
             .build()
             .map_err(|e| {
                 ProtocolError::TlsError(format!("Failed to build client verifier: {e}"))
             })?;
 
             // Create new config builder with client auth
-            let new_builder = ServerConfig::builder_with_provider(std::sync::Arc::new(
-                rustls::crypto::ring::default_provider(),
-            ))
-            .with_safe_default_protocol_versions()
-            .map_err(|_| {
-                ProtocolError::TlsError("Failed to configure TLS protocol versions".into())
-            })?;
+            let new_builder = ServerConfig::builder_with_provider(crypto_provider())
+                .with_safe_default_protocol_versions()
+                .map_err(|_| {
+                    ProtocolError::TlsError("Failed to configure TLS protocol versions".into())
+                })?;
             let new_cert_builder = new_builder.with_client_cert_verifier(client_auth);
 
             // Build a new config with certificates and client auth
@@ -510,12 +520,12 @@ impl TlsClientConfig {
     /// Build secure client config with system root CAs
     fn build_secure_client_config(&self) -> Result<ClientConfig> {
         let root_store = self.load_system_root_certificates()?;
-        let builder = ClientConfig::builder_with_provider(std::sync::Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .map_err(|_| ProtocolError::TlsError("Failed to configure TLS protocol versions".into()))?
-        .with_root_certificates(root_store);
+        let builder = ClientConfig::builder_with_provider(crypto_provider())
+            .with_safe_default_protocol_versions()
+            .map_err(|_| {
+                ProtocolError::TlsError("Failed to configure TLS protocol versions".into())
+            })?
+            .with_root_certificates(root_store);
 
         // Apply client auth directly
         if let (Some(client_cert_path), Some(client_key_path)) =
@@ -533,11 +543,11 @@ impl TlsClientConfig {
 
     /// Build insecure client config with custom verifier
     fn build_insecure_client_config(&self) -> Result<ClientConfig> {
-        let builder = ClientConfig::builder_with_provider(std::sync::Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .map_err(|_| ProtocolError::TlsError("Failed to configure TLS protocol versions".into()))?;
+        let builder = ClientConfig::builder_with_provider(crypto_provider())
+            .with_safe_default_protocol_versions()
+            .map_err(|_| {
+                ProtocolError::TlsError("Failed to configure TLS protocol versions".into())
+            })?;
         let verifier = self.create_custom_verifier();
         let custom_builder = builder
             .dangerous()

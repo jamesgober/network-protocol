@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-10-08
+
+### Fixed
+- `TlsServerConfig::load_server_config()` panicked with "Could not automatically determine the process-level CryptoProvider" when mTLS was enabled with `with_client_auth(..)`. The client certificate verifier was built with `WebPkiClientVerifier::builder`, which uses the process-level default provider, and `rustls` was built with both the `ring` and `aws-lc-rs` backends, so no default could be chosen. The verifier now uses the same explicit `ring` provider as the server and client config builders. The bug was present since 1.2.1.
+
+### Changed
+- `rustls` and `tokio-rustls` are now built without their default features, enabling only `ring`, `std`, `tls12` and `logging`. The crate only uses the `ring` provider, so `aws-lc-rs` (and its `cmake` build dependency) is no longer pulled into downstream builds. TLS behaviour is unchanged.
+
+### Added
+- mTLS tests that run without installing a process-level `CryptoProvider`: building an mTLS server config, a handshake with a client certificate signed by the trusted CA, and rejection of a client with no certificate or with a certificate from an untrusted CA
+- Tests now build `rustls` with both the `ring` and `aws-lc-rs` backends, so any code path that falls back to the process-level provider fails in tests. The manual `CryptoProvider::install_default()` call in `test_tls_pem_loading` is no longer needed and was removed.
+
 ## [1.2.2] - 2026-10-08
 
 ### Security
@@ -282,7 +294,8 @@ Performance-focused release with adaptive compression, buffer pooling, zero-allo
 - Cross-platform CI testing workflow
 
 
-[Unreleased]: https://github.com/jamesgober/network-protocol/compare/v1.2.2...HEAD
+[Unreleased]: https://github.com/jamesgober/network-protocol/compare/v1.2.3...HEAD
+[1.2.3]: https://github.com/jamesgober/network-protocol/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/jamesgober/network-protocol/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/jamesgober/network-protocol/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/jamesgober/network-protocol/compare/v1.1.1...v1.2.0

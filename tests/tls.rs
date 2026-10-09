@@ -149,10 +149,6 @@ async fn test_tls_tampering_protection() -> Result<()> {
 fn test_tls_pem_loading() -> Result<()> {
     let (cert_path, key_path) = generate_test_certificates()?;
 
-    // The mTLS client verifier uses the process-level CryptoProvider. Both the
-    // ring and aws-lc-rs rustls features are enabled, so one must be installed.
-    let _ = rustls::crypto::ring::default_provider().install_default();
-
     let server = TlsServerConfig::new(cert_path.clone(), key_path.clone())
         .with_client_auth(CERT_PATH)
         .require_client_auth(true);
@@ -172,5 +168,224 @@ fn test_tls_pem_loading() -> Result<()> {
         .with_client_certificate(KEY_PATH, CERT_PATH);
     assert!(swapped_client.load_client_config().is_err());
 
+    Ok(())
+}
+
+// mTLS tests. None of these install a process-level rustls CryptoProvider: the test
+// build enables both the ring and aws-lc-rs backends (see dev-dependencies), so any
+// code path that relies on the process default panics here.
+
+type TestResult<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+/// Writes a CA, a server cert and a client cert signed by that CA, plus a client cert
+/// signed by an unrelated CA, into a fresh directory. Returns the directory.
+fn generate_mtls_pki(name: &str) -> TestResult<PathBuf> {
+    use rcgen::{
+        BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer,
+        KeyPair, KeyUsagePurpose,
+    };
+
+    let dir = std::env::temp_dir().join(format!(
+        "network-protocol-mtls-{name}-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir)?;
+
+    let make_ca = |cn: &str| -> TestResult<(Issuer<'static, KeyPair>, String)> {
+        let mut params = CertificateParams::new(Vec::<String>::new())?;
+        params.distinguished_name.push(DnType::CommonName, cn);
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+        let key = KeyPair::generate()?;
+        let pem = params.self_signed(&key)?.pem();
+        Ok((Issuer::new(params, key), pem))
+    };
+
+    let make_leaf = |cn: &str,
+                     sans: Vec<String>,
+                     usage: ExtendedKeyUsagePurpose,
+                     issuer: &Issuer<'_, KeyPair>,
+                     file: &str|
+     -> TestResult<()> {
+        let mut params = CertificateParams::new(sans)?;
+        params.distinguished_name.push(DnType::CommonName, cn);
+        params.extended_key_usages = vec![usage];
+        let key = KeyPair::generate()?;
+        let cert = params.signed_by(&key, issuer)?;
+        std::fs::write(dir.join(format!("{file}.pem")), cert.pem())?;
+        std::fs::write(dir.join(format!("{file}.key")), key.serialize_pem())?;
+        Ok(())
+    };
+
+    let (ca, ca_pem) = make_ca("network-protocol test CA")?;
+    std::fs::write(dir.join("ca.pem"), ca_pem)?;
+    let (rogue_ca, _) = make_ca("network-protocol untrusted CA")?;
+
+    make_leaf(
+        "localhost",
+        vec!["localhost".into()],
+        ExtendedKeyUsagePurpose::ServerAuth,
+        &ca,
+        "server",
+    )?;
+    make_leaf(
+        "trusted client",
+        Vec::new(),
+        ExtendedKeyUsagePurpose::ClientAuth,
+        &ca,
+        "client",
+    )?;
+    make_leaf(
+        "untrusted client",
+        Vec::new(),
+        ExtendedKeyUsagePurpose::ClientAuth,
+        &rogue_ca,
+        "rogue_client",
+    )?;
+
+    Ok(dir)
+}
+
+fn mtls_server_config(dir: &std::path::Path) -> TlsServerConfig {
+    TlsServerConfig::new(dir.join("server.pem"), dir.join("server.key"))
+        .with_client_auth(dir.join("ca.pem").to_string_lossy())
+}
+
+/// Client config that pins the test server certificate, optionally presenting the
+/// client certificate stored under `client_cert`.
+fn mtls_client_config(
+    dir: &std::path::Path,
+    client_cert: Option<&str>,
+) -> TestResult<TlsClientConfig> {
+    use rustls::pki_types::pem::PemObject;
+    let server_cert = rustls::pki_types::CertificateDer::from_pem_file(dir.join("server.pem"))?;
+    let mut config = TlsClientConfig::new("localhost")
+        .insecure()
+        .with_pinned_cert_hash(TlsServerConfig::calculate_cert_hash(&server_cert));
+    if let Some(name) = client_cert {
+        config = config.with_client_certificate(
+            dir.join(format!("{name}.pem"))
+                .to_string_lossy()
+                .into_owned(),
+            dir.join(format!("{name}.key"))
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+    Ok(config)
+}
+
+/// Runs one mTLS handshake followed by a 4-byte echo. Returns the server-side and
+/// client-side outcomes.
+async fn mtls_exchange(
+    server: TlsServerConfig,
+    client: TlsClientConfig,
+) -> TestResult<(std::io::Result<()>, std::io::Result<()>)> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let acceptor =
+        tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(server.load_server_config()?));
+    let connector =
+        tokio_rustls::TlsConnector::from(std::sync::Arc::new(client.load_client_config()?));
+    let server_name = client.server_name()?.to_owned();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+
+    let server_task = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut tls = acceptor.accept(stream).await?;
+        let mut buf = [0u8; 4];
+        tls.read_exact(&mut buf).await?;
+        tls.write_all(&buf).await?;
+        tls.shutdown().await?;
+        Ok::<(), std::io::Error>(())
+    });
+
+    let client_exchange = async {
+        let stream = tokio::net::TcpStream::connect(addr).await?;
+        let mut tls = connector.connect(server_name, stream).await?;
+        tls.write_all(b"ping").await?;
+        let mut buf = [0u8; 4];
+        tls.read_exact(&mut buf).await?;
+        if &buf != b"ping" {
+            return Err(std::io::Error::other("echo mismatch"));
+        }
+        Ok(())
+    };
+    let client_result = tokio::time::timeout(Duration::from_secs(10), client_exchange)
+        .await
+        .unwrap_or_else(|_| Err(std::io::Error::other("client timed out")));
+
+    let server_result = tokio::time::timeout(Duration::from_secs(10), server_task)
+        .await
+        .map_err(|_| "server timed out")??;
+
+    Ok((server_result, client_result))
+}
+
+#[test]
+fn test_mtls_server_config_builds_without_process_provider() -> TestResult<()> {
+    let dir = generate_mtls_pki("config")?;
+    let result = mtls_server_config(&dir).load_server_config();
+    let _ = std::fs::remove_dir_all(&dir);
+    result?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_mtls_handshake_accepts_trusted_client() -> TestResult<()> {
+    let dir = generate_mtls_pki("trusted")?;
+    let result = match mtls_client_config(&dir, Some("client")) {
+        Ok(client) => mtls_exchange(mtls_server_config(&dir), client).await,
+        Err(e) => Err(e),
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let (server, client) = result?;
+    assert!(server.is_ok(), "server side failed: {server:?}");
+    assert!(client.is_ok(), "client side failed: {client:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_mtls_handshake_rejects_client_without_cert() -> TestResult<()> {
+    let dir = generate_mtls_pki("nocert")?;
+    let result = match mtls_client_config(&dir, None) {
+        Ok(client) => mtls_exchange(mtls_server_config(&dir), client).await,
+        Err(e) => Err(e),
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let (server, client) = result?;
+    assert!(
+        format!("{server:?}").contains("NoCertificatesPresented"),
+        "expected rejection for a missing client certificate, got: {server:?}"
+    );
+    assert!(
+        client.is_err(),
+        "client completed an exchange without a certificate"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_mtls_handshake_rejects_untrusted_client_cert() -> TestResult<()> {
+    let dir = generate_mtls_pki("untrusted")?;
+    let result = match mtls_client_config(&dir, Some("rogue_client")) {
+        Ok(client) => mtls_exchange(mtls_server_config(&dir), client).await,
+        Err(e) => Err(e),
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let (server, client) = result?;
+    assert!(
+        format!("{server:?}").contains("UnknownIssuer"),
+        "expected rejection for an untrusted client certificate, got: {server:?}"
+    );
+    assert!(
+        client.is_err(),
+        "client completed an exchange with an untrusted cert"
+    );
     Ok(())
 }
