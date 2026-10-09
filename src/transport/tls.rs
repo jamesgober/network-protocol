@@ -21,7 +21,8 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
-use rustls::client::danger::{ServerCertVerified, ServerCertVerifier};
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::crypto::{CryptoProvider, WebPkiSupportedAlgorithms};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, ServerConfig};
@@ -37,10 +38,19 @@ use crate::core::packet::Packet;
 use crate::error::{ProtocolError, Result};
 use futures::{SinkExt, StreamExt};
 
-// Custom certificate verifiers
+// Custom certificate verifiers.
+//
+// Both verifiers replace only the certificate *validation* step (chain building and
+// hostname checks). They still verify the handshake signature with the provider's
+// signature algorithms, which is what proves that the server holds the private key
+// for the certificate it presented. Without that check a pinned certificate, which is
+// public, could be replayed by any server.
+
+/// Accepts only a server certificate whose SHA-256 fingerprint matches the pin.
 #[derive(Debug)]
 struct CertificateFingerprint {
     fingerprint: Vec<u8>,
+    supported_algs: WebPkiSupportedAlgorithms,
 }
 
 impl ServerCertVerifier for CertificateFingerprint {
@@ -69,34 +79,33 @@ impl ServerCertVerifier for CertificateFingerprint {
 
     fn verify_tls12_signature(
         &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
-    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.supported_algs)
     }
 
     fn verify_tls13_signature(
         &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
-    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.supported_algs)
     }
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        // Accept common signature schemes
-        vec![
-            rustls::SignatureScheme::RSA_PKCS1_SHA256,
-            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-            rustls::SignatureScheme::ED25519,
-        ]
+        self.supported_algs.supported_schemes()
     }
 }
 
+/// Accepts any server certificate (insecure mode without a pin), but still requires a
+/// valid handshake signature from the key in that certificate.
 #[derive(Debug)]
-struct AcceptAnyServerCert;
+struct AcceptAnyServerCert {
+    supported_algs: WebPkiSupportedAlgorithms,
+}
 
 impl ServerCertVerifier for AcceptAnyServerCert {
     fn verify_server_cert(
@@ -112,28 +121,24 @@ impl ServerCertVerifier for AcceptAnyServerCert {
 
     fn verify_tls12_signature(
         &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
-    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.supported_algs)
     }
 
     fn verify_tls13_signature(
         &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
-    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.supported_algs)
     }
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        vec![
-            rustls::SignatureScheme::RSA_PKCS1_SHA256,
-            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-            rustls::SignatureScheme::ED25519,
-        ]
+        self.supported_algs.supported_schemes()
     }
 }
 
@@ -142,8 +147,100 @@ impl ServerCertVerifier for AcceptAnyServerCert {
 /// rustls APIs without a `_with_provider` suffix fall back to the process-level default
 /// provider, which panics when more than one rustls crypto backend is compiled in and
 /// none has been installed. Always pass this provider explicitly instead.
-fn crypto_provider() -> Arc<rustls::crypto::CryptoProvider> {
+fn crypto_provider() -> Arc<CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
+}
+
+/// Resolves the versions and cipher suites requested with `with_tls_versions()` and
+/// `with_cipher_suites()` into the protocol versions to enable and a provider whose
+/// cipher suites are restricted to the requested ones.
+///
+/// `None` means the rustls defaults. Cipher suites are matched by their IANA identifier
+/// against the suites of [`crypto_provider()`], keeping that provider's preference order.
+/// Requests that leave nothing usable are rejected here rather than falling back to the
+/// defaults.
+fn resolve_protocol_settings(
+    tls_versions: Option<&[TlsVersion]>,
+    cipher_suites: Option<&[rustls::SupportedCipherSuite]>,
+) -> Result<(
+    Arc<CryptoProvider>,
+    Vec<&'static rustls::SupportedProtocolVersion>,
+)> {
+    let versions: Vec<&'static rustls::SupportedProtocolVersion> = match tls_versions {
+        None => rustls::DEFAULT_VERSIONS.to_vec(),
+        Some(requested) => {
+            let mut has_tls13 = false;
+            let mut has_tls12 = false;
+            for v in requested {
+                match v {
+                    TlsVersion::TLS12 => has_tls12 = true,
+                    TlsVersion::TLS13 => has_tls13 = true,
+                    TlsVersion::All => {
+                        has_tls13 = true;
+                        has_tls12 = true;
+                    }
+                }
+            }
+            debug!(
+                "TLS versions requested: TLS1.2={}, TLS1.3={}",
+                has_tls12, has_tls13
+            );
+
+            let mut versions = Vec::with_capacity(2);
+            if has_tls13 {
+                versions.push(&rustls::version::TLS13);
+            }
+            if has_tls12 {
+                versions.push(&rustls::version::TLS12);
+            }
+            if versions.is_empty() {
+                return Err(ProtocolError::TlsError(
+                    "No TLS protocol versions configured: with_tls_versions() was given an empty list"
+                        .into(),
+                ));
+            }
+            versions
+        }
+    };
+
+    let mut provider = CryptoProvider::clone(&crypto_provider());
+    if let Some(requested) = cipher_suites {
+        for suite in requested {
+            if !provider
+                .cipher_suites
+                .iter()
+                .any(|s| s.suite() == suite.suite())
+            {
+                warn!(suite = ?suite.suite(), "Requested cipher suite is not supported and was ignored");
+            }
+        }
+        provider
+            .cipher_suites
+            .retain(|s| requested.iter().any(|r| r.suite() == s.suite()));
+        if provider.cipher_suites.is_empty() {
+            return Err(ProtocolError::TlsError(
+                "No supported cipher suites configured: none of the suites given to with_cipher_suites() are available"
+                    .into(),
+            ));
+        }
+        debug!(
+            suites = ?provider.cipher_suites.iter().map(|s| s.suite()).collect::<Vec<_>>(),
+            "TLS cipher suites restricted"
+        );
+    }
+
+    if !provider
+        .cipher_suites
+        .iter()
+        .any(|s| versions.contains(&s.version()))
+    {
+        return Err(ProtocolError::TlsError(
+            "None of the configured cipher suites can be used with the configured TLS versions"
+                .into(),
+        ));
+    }
+
+    Ok((Arc::new(provider), versions))
 }
 
 /// Helper function to load a private key from PKCS8 format
@@ -212,12 +309,19 @@ impl TlsServerConfig {
     }
 
     /// Set allowed TLS protocol versions
+    ///
+    /// Only the listed versions are enabled. An empty list is rejected when the
+    /// config is loaded.
     pub fn with_tls_versions(mut self, versions: Vec<TlsVersion>) -> Self {
         self.tls_versions = Some(versions);
         self
     }
 
     /// Set allowed cipher suites
+    ///
+    /// Only the listed suites are enabled, matched by suite identifier and kept in this
+    /// crate's preference order. Loading the config fails if none of them is supported,
+    /// or if none of them can be used with the enabled TLS versions.
     pub fn with_cipher_suites(mut self, cipher_suites: Vec<rustls::SupportedCipherSuite>) -> Self {
         self.cipher_suites = Some(cipher_suites);
         self
@@ -231,6 +335,10 @@ impl TlsServerConfig {
     }
 
     /// Set whether client authentication is required (true) or optional (false)
+    ///
+    /// Only has an effect together with `with_client_auth()`, which sets it to `true`.
+    /// When optional, clients without a certificate are accepted, but a certificate that
+    /// is presented must still be signed by the client CA.
     pub fn require_client_auth(mut self, required: bool) -> Self {
         self.require_client_auth = required;
         self
@@ -288,44 +396,16 @@ impl TlsServerConfig {
         let mut key_reader = BufReader::new(key_file);
         let private_key = load_private_key(&mut key_reader)?;
 
-        // Validate TLS versions if specified
-        // Note: In rustls 0.22, with_safe_defaults() restricts to TLS 1.2+ (best practice)
-        if let Some(versions) = &self.tls_versions {
-            let mut has_tls13 = false;
-            let mut has_tls12 = false;
-            for v in versions {
-                match v {
-                    TlsVersion::TLS12 => has_tls12 = true,
-                    TlsVersion::TLS13 => has_tls13 = true,
-                    TlsVersion::All => {
-                        has_tls13 = true;
-                        has_tls12 = true;
-                    }
-                }
-            }
-            // Document that with_safe_defaults uses best practices
-            debug!(
-                "TLS versions requested: TLS1.2={}, TLS1.3={}",
-                has_tls12, has_tls13
-            );
-        }
-
-        // Create a server configuration with safe defaults (TLS 1.2+, modern ciphersuites)
-        let config_builder = ServerConfig::builder_with_provider(crypto_provider())
-            .with_safe_default_protocol_versions()
-            .map_err(|_| {
-                ProtocolError::TlsError("Failed to configure TLS protocol versions".into())
+        let (provider, versions) =
+            resolve_protocol_settings(self.tls_versions.as_deref(), self.cipher_suites.as_deref())?;
+        let config_builder = ServerConfig::builder_with_provider(provider.clone())
+            .with_protocol_versions(&versions)
+            .map_err(|e| {
+                ProtocolError::TlsError(format!("Failed to configure TLS protocol versions: {e}"))
             })?;
 
-        let cert_builder = config_builder.with_no_client_auth();
-
-        // Build config with certificates
-        let mut config = cert_builder
-            .with_single_cert(cert_chain.clone(), private_key.clone_key())
-            .map_err(|e| ProtocolError::TlsError(format!("TLS error: {e}")))?;
-
-        // Configure client authentication if required (mTLS)
-        if let Some(client_ca_path) = &self.client_ca_path {
+        // Configure client authentication (mTLS) if a client CA was given
+        let cert_builder = if let Some(client_ca_path) = &self.client_ca_path {
             // Load client CA certificates
             let client_ca_file = File::open(client_ca_path).map_err(|e| {
                 ProtocolError::TlsError(format!("Failed to open client CA file: {e}"))
@@ -354,30 +434,33 @@ impl TlsServerConfig {
             // Create client authentication verifier using WebPkiClientVerifier.
             // The provider is passed explicitly: `WebPkiClientVerifier::builder` uses the
             // process-level default, which panics when it cannot be chosen automatically.
-            let client_auth = rustls::server::WebPkiClientVerifier::builder_with_provider(
+            let mut verifier_builder = rustls::server::WebPkiClientVerifier::builder_with_provider(
                 Arc::new(client_root_store),
-                crypto_provider(),
-            )
-            .build()
-            .map_err(|e| {
+                provider,
+            );
+            if !self.require_client_auth {
+                // Optional client auth: a client without a certificate is accepted, but a
+                // certificate that is presented must still chain to the client CA.
+                verifier_builder = verifier_builder.allow_unauthenticated();
+            }
+            let client_auth = verifier_builder.build().map_err(|e| {
                 ProtocolError::TlsError(format!("Failed to build client verifier: {e}"))
             })?;
 
-            // Create new config builder with client auth
-            let new_builder = ServerConfig::builder_with_provider(crypto_provider())
-                .with_safe_default_protocol_versions()
-                .map_err(|_| {
-                    ProtocolError::TlsError("Failed to configure TLS protocol versions".into())
-                })?;
-            let new_cert_builder = new_builder.with_client_cert_verifier(client_auth);
+            if self.require_client_auth {
+                debug!("mTLS enabled with client certificate verification required");
+            } else {
+                debug!("mTLS enabled with optional client certificate verification");
+            }
+            config_builder.with_client_cert_verifier(client_auth)
+        } else {
+            config_builder.with_no_client_auth()
+        };
 
-            // Build a new config with certificates and client auth
-            config = new_cert_builder
-                .with_single_cert(cert_chain, private_key.clone_key())
-                .map_err(|e| ProtocolError::TlsError(format!("TLS error with client auth: {e}")))?;
-
-            debug!("mTLS enabled with client certificate verification required");
-        }
+        // Build config with certificates
+        let mut config = cert_builder
+            .with_single_cert(cert_chain, private_key)
+            .map_err(|e| ProtocolError::TlsError(format!("TLS error: {e}")))?;
 
         // Configure ALPN protocols if specified
         if let Some(protocols) = &self.alpn_protocols {
@@ -431,12 +514,19 @@ impl TlsClientConfig {
     }
 
     /// Set allowed TLS protocol versions
+    ///
+    /// Only the listed versions are enabled. An empty list is rejected when the
+    /// config is loaded.
     pub fn with_tls_versions(mut self, versions: Vec<TlsVersion>) -> Self {
         self.tls_versions = Some(versions);
         self
     }
 
     /// Set allowed cipher suites
+    ///
+    /// Only the listed suites are enabled, matched by suite identifier and kept in this
+    /// crate's preference order. Loading the config fails if none of them is supported,
+    /// or if none of them can be used with the enabled TLS versions.
     pub fn with_cipher_suites(mut self, cipher_suites: Vec<rustls::SupportedCipherSuite>) -> Self {
         self.cipher_suites = Some(cipher_suites);
         self
@@ -452,7 +542,10 @@ impl TlsClientConfig {
     /// Allow insecure connections (skip certificate verification)
     ///
     /// # WARNING: Security Risk
-    /// This mode disables certificate verification entirely and should ONLY be used for:
+    /// This mode skips certificate validation (no CA chain or hostname checks), so any
+    /// certificate is accepted unless one is pinned with `with_pinned_cert_hash()`. The
+    /// server must still prove that it holds the private key for the certificate it
+    /// presents: the handshake signature is always verified. This mode should ONLY be used for:
     /// - Development and testing
     /// - Debugging environments
     /// - Internal networks with certificate pinning enabled
@@ -473,6 +566,8 @@ impl TlsClientConfig {
     /// from servers with the exact certificate matching this hash.
     /// Can be combined with insecure mode for development environments where
     /// you want to skip standard CA verification but still verify a specific cert.
+    /// The handshake signature is verified against the pinned certificate's public key,
+    /// so a server that has the certificate but not its private key is rejected.
     pub fn with_pinned_cert_hash(mut self, hash: Vec<u8>) -> Self {
         if hash.len() != 32 {
             warn!(
@@ -486,8 +581,6 @@ impl TlsClientConfig {
 
     /// Load the TLS client configuration
     pub fn load_client_config(&self) -> Result<ClientConfig> {
-        self.log_tls_version_info();
-
         if self.insecure {
             self.build_insecure_client_config()
         } else {
@@ -495,37 +588,28 @@ impl TlsClientConfig {
         }
     }
 
-    /// Log TLS version configuration
-    fn log_tls_version_info(&self) {
-        if let Some(versions) = &self.tls_versions {
-            let mut has_tls13 = false;
-            let mut has_tls12 = false;
-            for v in versions {
-                match v {
-                    TlsVersion::TLS12 => has_tls12 = true,
-                    TlsVersion::TLS13 => has_tls13 = true,
-                    TlsVersion::All => {
-                        has_tls13 = true;
-                        has_tls12 = true;
-                    }
-                }
-            }
-            debug!(
-                "TLS client versions requested: TLS1.2={}, TLS1.3={}",
-                has_tls12, has_tls13
-            );
-        }
+    /// Start a client config builder with the configured provider, versions and suites
+    fn client_config_builder(
+        &self,
+    ) -> Result<(
+        Arc<CryptoProvider>,
+        rustls::ConfigBuilder<ClientConfig, rustls::WantsVerifier>,
+    )> {
+        let (provider, versions) =
+            resolve_protocol_settings(self.tls_versions.as_deref(), self.cipher_suites.as_deref())?;
+        let builder = ClientConfig::builder_with_provider(provider.clone())
+            .with_protocol_versions(&versions)
+            .map_err(|e| {
+                ProtocolError::TlsError(format!("Failed to configure TLS protocol versions: {e}"))
+            })?;
+        Ok((provider, builder))
     }
 
     /// Build secure client config with system root CAs
     fn build_secure_client_config(&self) -> Result<ClientConfig> {
+        let (_, builder) = self.client_config_builder()?;
         let root_store = self.load_system_root_certificates()?;
-        let builder = ClientConfig::builder_with_provider(crypto_provider())
-            .with_safe_default_protocol_versions()
-            .map_err(|_| {
-                ProtocolError::TlsError("Failed to configure TLS protocol versions".into())
-            })?
-            .with_root_certificates(root_store);
+        let builder = builder.with_root_certificates(root_store);
 
         // Apply client auth directly
         if let (Some(client_cert_path), Some(client_key_path)) =
@@ -543,12 +627,8 @@ impl TlsClientConfig {
 
     /// Build insecure client config with custom verifier
     fn build_insecure_client_config(&self) -> Result<ClientConfig> {
-        let builder = ClientConfig::builder_with_provider(crypto_provider())
-            .with_safe_default_protocol_versions()
-            .map_err(|_| {
-                ProtocolError::TlsError("Failed to configure TLS protocol versions".into())
-            })?;
-        let verifier = self.create_custom_verifier();
+        let (provider, builder) = self.client_config_builder()?;
+        let verifier = self.create_custom_verifier(&provider);
         let custom_builder = builder
             .dangerous()
             .with_custom_certificate_verifier(verifier);
@@ -589,13 +669,17 @@ impl TlsClientConfig {
     }
 
     /// Create custom certificate verifier (pinning or accept-any)
-    fn create_custom_verifier(&self) -> Arc<dyn ServerCertVerifier> {
+    ///
+    /// Handshake signatures are checked with the same provider's signature algorithms.
+    fn create_custom_verifier(&self, provider: &CryptoProvider) -> Arc<dyn ServerCertVerifier> {
+        let supported_algs = provider.signature_verification_algorithms;
         if let Some(hash) = &self.pinned_cert_hash {
             Arc::new(CertificateFingerprint {
                 fingerprint: hash.clone(),
+                supported_algs,
             })
         } else {
-            Arc::new(AcceptAnyServerCert)
+            Arc::new(AcceptAnyServerCert { supported_algs })
         }
     }
 

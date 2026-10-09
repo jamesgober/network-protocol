@@ -110,6 +110,8 @@ Network-protocol implements comprehensive memory zeroization for all cryptograph
   - Upgraded `rustls-webpki` to 0.103.15 (RUSTSEC-2026-0098, RUSTSEC-2026-0099, RUSTSEC-2026-0104)
   - Raised `rand` floor to 0.9.3 (RUSTSEC-2026-0097)
   - Replaced unmaintained `rustls-pemfile` with `rustls-pki-types` PEM parsing (RUSTSEC-2025-0134)
+- **v1.2.4**: TLS certificate pinning fix:
+  - `with_pinned_cert_hash()` and `insecure()` client verifiers now verify the TLS 1.2 and 1.3 handshake signature, so a server must hold the private key of the pinned certificate (previously a copy of the public certificate was enough)
 
 ### Verification
 

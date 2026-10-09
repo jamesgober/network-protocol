@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-10-08
+
+### Security
+- Certificate pinning did not prove that the server holds the pinned certificate's private key. With `TlsClientConfig::insecure().with_pinned_cert_hash(..)`, the client compared the certificate fingerprint, but its `verify_tls12_signature` and `verify_tls13_signature` returned success without checking the handshake signature. A certificate is public, so any server that presented a copy of the pinned certificate was accepted, and an attacker on the network path could impersonate the pinned server. The verifier now checks the handshake signature against the certificate's public key with `rustls::crypto::verify_tls12_signature` / `verify_tls13_signature`, using the signature algorithms of the crate's `ring` provider. A server that presents the pinned certificate without its private key now fails the handshake with a `BadSignature` error. The bug was introduced in 1.2.0 with the move to rustls 0.22, which replaced the rustls default signature checks with these no-op methods; 1.1.x and earlier are not affected.
+- `insecure()` without a pin now also verifies the handshake signature. This mode is documented to accept any certificate, and it still does: there is no chain or hostname validation, so it gives no protection against an attacker who presents their own certificate. The signature check only confirms that the server holds the key for the certificate it sent. It costs nothing and every correctly configured server passes it, so both custom verifiers now behave the same way. The `insecure()` docs now say exactly what is and is not checked.
+- Both custom verifiers advertised only three signature schemes (RSA PKCS#1 SHA-256, ECDSA P-256 SHA-256, Ed25519). They now advertise the schemes supported by the `ring` provider, the same list the standard rustls verifier uses.
+
+### Fixed
+- `TlsServerConfig::require_client_auth(false)` had no effect: once a client CA was set with `with_client_auth(..)`, a client certificate was always required. `false` now makes client authentication optional, as documented: a client without a certificate is accepted, and a certificate that is presented must still be signed by the client CA. This is a behaviour change for code that called `require_client_auth(false)` but relied on certificates being required anyway.
+- `with_tls_versions(..)` and `with_cipher_suites(..)` on `TlsServerConfig` and `TlsClientConfig` only logged the requested values; the configs always used the rustls defaults (TLS 1.2 and 1.3 with every `ring` cipher suite). They are now applied, which is a behaviour change toward what the API always promised:
+  - Only the listed protocol versions are enabled. `TlsVersion::All` enables TLS 1.2 and 1.3.
+  - Only the listed cipher suites are enabled. Suites are matched by their IANA identifier against the suites of the `ring` provider and keep that provider's preference order. A requested suite the provider does not support is ignored with a warning.
+  - `load_server_config()` and `load_client_config()` now return `ProtocolError::TlsError` when the request leaves nothing usable: an empty version list, an empty cipher suite list, no supported suite among those given, or no suite that works with the enabled versions. These cases no longer fall back to the defaults.
+  - Code that passed values to these methods and was unknowingly running with the defaults can now see config errors, or handshakes refused by peers that only support the excluded versions or suites.
+
+### Added
+- TLS tests: a pinned client connects to the real server; a pinned client rejects an impostor server that presents the pinned certificate but signs with a different key (TLS 1.2 and 1.3); `insecure()` rejects the same impostor; optional client authentication accepts a client without a certificate and still rejects a certificate from an untrusted CA; a TLS 1.3-only server rejects a TLS 1.2-only client; cipher suite restrictions are visible in the negotiated suite; and the config errors listed above.
+
 ## [1.2.3] - 2026-10-08
 
 ### Fixed
@@ -294,7 +312,8 @@ Performance-focused release with adaptive compression, buffer pooling, zero-allo
 - Cross-platform CI testing workflow
 
 
-[Unreleased]: https://github.com/jamesgober/network-protocol/compare/v1.2.3...HEAD
+[Unreleased]: https://github.com/jamesgober/network-protocol/compare/v1.2.4...HEAD
+[1.2.4]: https://github.com/jamesgober/network-protocol/compare/v1.2.3...v1.2.4
 [1.2.3]: https://github.com/jamesgober/network-protocol/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/jamesgober/network-protocol/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/jamesgober/network-protocol/compare/v1.2.0...v1.2.1
