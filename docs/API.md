@@ -47,6 +47,8 @@
 - [Service](#service)
   - [Client](#client)
   - [Daemon](#daemon)
+  - [TLS Daemon](#tls-daemon)
+  - [TLS Client](#tls-client)
   - [Secure Connection](#secure-connection)
     - [Connection Pooling](#connection-pooling)
     - [Multiplexing](#multiplexing)
@@ -75,110 +77,116 @@ Create a `config.toml` file in your project with your desired settings:
 # Server-specific configuration
 [server]
 address = "127.0.0.1:9000"
-backpressure_limit = 32
-connection_timeout = 5000    # milliseconds
+backpressure_limit = 32      # messages queued per connection
+connection_timeout = 5000    # milliseconds, per handshake step
 heartbeat_interval = 15000   # milliseconds
+shutdown_timeout = 10000     # milliseconds
+max_connections = 1000
 
 # Client-specific configuration
 [client]
 address = "127.0.0.1:9000"
 connection_timeout = 5000    # milliseconds
+operation_timeout = 3000     # milliseconds, per send
 response_timeout = 30000     # milliseconds
-
-# Transport configuration
-[transport]
-compression_enabled = false
-encryption_enabled = true
+heartbeat_interval = 15000   # milliseconds
 
 # Logging configuration
 [logging]
 app_name = "my-application"
 log_level = "info"           # options: trace, debug, info, warn, error
 log_to_console = true
+log_to_file = false
+json_format = false
 ```
+
+Each table is optional and falls back to its defaults when left out, but a table that is present must list all of its fields, except the deprecated ones. The deprecated `[client]` reconnect settings and every `[transport]` field have no effect from 1.3.0 and can be left out; they are still accepted if present, so older files keep loading.
 
 Load the configuration in your code:
 
 ```rust
 use network_protocol::config::NetworkConfig;
 
-async fn main() -> Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load from a specific file path
     let config = NetworkConfig::from_file("path/to/config.toml")?;
-    
-    // Or load from environment variables (defaults + overrides)
-    let config = NetworkConfig::from_env()?;
-    
+
+    // Or start from the defaults and apply environment variables
+    // let config = NetworkConfig::from_env()?;
+
+    // Check the values before using them
+    config.validate_strict()?;
+
     // Access configuration values
     let server_addr = config.server.address.clone();
     println!("Server will bind to: {}", server_addr);
+    Ok(())
 }
 ```
 
 #### Using Environment Variables
 
-Environment variables override corresponding TOML settings, following this naming pattern:
-
-```
-NETWORK_PROTOCOL_SECTION_KEY=value
-```
-
-For example:
+`NetworkConfig::from_env()` starts from the defaults (it does not read a TOML file) and applies these variables when they are set:
 
 ```bash
-# Override server address
+# Server listen address
 export NETWORK_PROTOCOL_SERVER_ADDRESS="0.0.0.0:8080"
 
-# Override logging level
-export NETWORK_PROTOCOL_LOGGING_LOG_LEVEL="debug"
+# Server backpressure_limit
+export NETWORK_PROTOCOL_BACKPRESSURE_LIMIT="64"
 
-# Override client timeout
+# connection_timeout for both server and client, in milliseconds
 export NETWORK_PROTOCOL_CONNECTION_TIMEOUT_MS="10000"
+
+# Server heartbeat_interval, in milliseconds
+export NETWORK_PROTOCOL_HEARTBEAT_INTERVAL_MS="15000"
 ```
+
+No other variables are read. Values that do not parse as numbers are ignored.
 
 ### Server Setup
 
-Create a basic server with default configuration:
+Start a server with the default configuration. It answers `PING` and `ECHO` and runs until Ctrl+C:
 
 ```rust
-use network_protocol::service::daemon::Daemon;
-use network_protocol::protocol::dispatcher::Dispatcher;
-use network_protocol::protocol::message::Message;
-use std::sync::Arc;
+use network_protocol::service::daemon;
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    // Create a dispatcher for handling messages
-    let dispatcher = Arc::new(Dispatcher::new());
-    
-    // Register message handlers
-    dispatcher.register("PING", |_| Ok(Message::Pong))?;
-    dispatcher.register("ECHO", |msg| {
-        match msg {
-            Message::Echo(s) => Ok(Message::Echo(s.clone())),
-            _ => Ok(Message::Unknown),
-        }
-    })?;
-    
-    // Start the server with default config
-    let daemon = Daemon::new(dispatcher);
-    daemon.start().await?
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    daemon::start("127.0.0.1:9000").await?;
+    Ok(())
 }
 ```
 
-With custom configuration:
+With custom configuration and your own message handlers:
 
 ```rust
 use network_protocol::config::NetworkConfig;
-use network_protocol::service::daemon::Daemon;
+use network_protocol::protocol::dispatcher::Dispatcher;
+use network_protocol::protocol::message::Message;
+use network_protocol::service::daemon;
+use std::sync::Arc;
 
-async fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load configuration
     let config = NetworkConfig::from_env()?;
-    
-    // Create and start daemon with custom config
-    let daemon = Daemon::with_config(dispatcher, config);
-    daemon.start().await?
+
+    // Create a dispatcher for handling messages. The server uses only these handlers.
+    let dispatcher = Arc::new(Dispatcher::new());
+    dispatcher.register("PING", |_| Ok(Message::Pong))?;
+    dispatcher.register("ECHO", |msg| match msg {
+        Message::Echo(s) => Ok(Message::Echo(s.clone())),
+        _ => Ok(Message::Unknown),
+    })?;
+
+    // Start the server in a background task
+    let mut server = daemon::start_daemon_no_signals(config.server, dispatcher).await?;
+
+    // Stop it on Ctrl+C
+    tokio::signal::ctrl_c().await?;
+    server.shutdown().await?;
+    Ok(())
 }
 ```
 
@@ -191,25 +199,29 @@ use network_protocol::service::client::Client;
 use network_protocol::protocol::message::Message;
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Connect to server with default configuration
     let mut client = Client::connect("127.0.0.1:9000").await?;
-    
-    // Send a ping message
-    let response = client.send(Message::Ping).await?;
-    
+
+    // Send a ping message and read the reply
+    client.send(Message::Ping).await?;
+    let response = client.recv().await?;
+
     // Check the response
     match response {
         Message::Pong => println!("Server responded with pong"),
         _ => println!("Unexpected response: {:?}", response),
     }
-    
-    // Send an echo message
-    let response = client.send(Message::Echo("Hello, server!".to_string())).await?;
+
+    // Send an echo message and wait for the reply (up to response_timeout)
+    let response = client
+        .send_and_wait(Message::Echo("Hello, server!".to_string()))
+        .await?;
     println!("Echo response: {:?}", response);
-    
+
     // Disconnect gracefully
-    client.disconnect().await?
+    client.send(Message::Disconnect).await?;
+    Ok(())
 }
 ```
 
@@ -253,37 +265,37 @@ async fn connect_to_uds_server() -> Result<()> {
 
 ### TLS Security
 
-Secure your connections with TLS:
+Secure your connections with TLS. Both sides are configured with builders in `transport::tls`:
 
 ```rust
-use network_protocol::transport::tls;
-use network_protocol::transport::tls::{TlsConfig, TlsClientConfig};
+use network_protocol::protocol::message::Message;
+use network_protocol::service::{tls_client::TlsClient, tls_daemon};
+use network_protocol::transport::tls::{TlsClientConfig, TlsServerConfig};
 
 // TLS Server
-async fn start_tls_server() -> Result<()> {
-    let config = TlsConfig {
-        cert_path: "certs/server.crt",
-        key_path: "certs/server.key",
-        ca_path: Some("certs/ca.crt"),  // For client cert validation
-        verify_client: true,             // Enable mTLS
-    };
-    
-    tls::start_server("127.0.0.1:8443", config).await
+async fn start_tls_server() -> Result<(), Box<dyn std::error::Error>> {
+    let config = TlsServerConfig::new("certs/server.crt", "certs/server.key")
+        .with_client_auth("certs/client-ca.crt"); // Require client certificates (mTLS)
+
+    // Serves PING and ECHO until Ctrl+C
+    tls_daemon::start("127.0.0.1:8443", config).await?;
+    Ok(())
 }
 
 // TLS Client
-async fn connect_to_tls_server() -> Result<()> {
-    let config = TlsClientConfig {
-        cert_path: Some("certs/client.crt"),  // For mTLS
-        key_path: Some("certs/client.key"),   // For mTLS
-        ca_path: Some("certs/ca.crt"),        // To validate server cert
-        server_name: "example.com",           // SNI
-    };
-    
-    let framed = tls::connect("127.0.0.1:8443", config).await?;
-    // Use framed for sending/receiving packets
+async fn connect_to_tls_server() -> Result<(), Box<dyn std::error::Error>> {
+    let config = TlsClientConfig::new("example.com") // SNI and hostname check
+        .with_root_ca("certs/ca.crt") // Validate the server against this CA, not the system roots
+        .with_client_certificate("certs/client.crt", "certs/client.key"); // For mTLS
+
+    let mut client = TlsClient::connect("127.0.0.1:8443", config).await?;
+    let reply = client.request(Message::Ping).await?;
+    println!("Reply: {:?}", reply);
+    Ok(())
 }
 ```
+
+See [TLS Transport](#tls-transport) for every option, including certificate pinning, optional client authentication and protocol version limits.
 
 ### Using Dispatchers
 
@@ -326,7 +338,7 @@ let response = dispatcher.dispatch(&Message::Ping)?;
 ### Install Manually
 ```toml
 [dependencies]
-network-protocol = "1.2.4"
+network-protocol = "1.3"
 ```
 
 ### Install Using Cargo
@@ -691,40 +703,85 @@ async fn main() -> network_protocol::error::Result<()> {
 
 ### TLS Transport
 
-The TLS transport module provides functions for secure TLS-based network communication with certificate validation and mutual TLS support.
+The TLS transport module provides functions for secure TLS-based network communication with certificate validation and mutual TLS support. It uses rustls with the `ring` provider. TLS 1.2 and 1.3 are enabled by default.
 
 #### Structs
 
-##### `TlsConfig`
+##### `TlsServerConfig`
+
+A builder for the server side. The fields are private; configure it with these methods:
 
 ```rust
-pub struct TlsConfig {
-    pub cert_path: &'static str,
-    pub key_path: &'static str,
-    pub ca_path: Option<&'static str>,
-    pub verify_client: bool,
+impl TlsServerConfig {
+    pub fn new<P: AsRef<Path>>(cert_path: P, key_path: P) -> Self
+    pub fn with_client_auth<S: Into<String>>(self, client_ca_path: S) -> Self
+    pub fn require_client_auth(self, required: bool) -> Self
+    pub fn with_tls_versions(self, versions: Vec<TlsVersion>) -> Self
+    pub fn with_cipher_suites(self, cipher_suites: Vec<rustls::SupportedCipherSuite>) -> Self
+    pub fn with_alpn_protocols(self, protocols: Vec<Vec<u8>>) -> Self
+    pub fn generate_self_signed<P: AsRef<Path>>(cert_path: P, key_path: P) -> io::Result<Self>
+    pub fn load_server_config(&self) -> Result<rustls::ServerConfig>
+    pub fn calculate_cert_hash(cert: &CertificateDer<'_>) -> Vec<u8>
 }
 ```
+
+- `new`: PEM certificate chain and private key. The key must be a PEM `PRIVATE KEY` (PKCS#8) block.
+- `with_client_auth`: enables mTLS. Clients must present a certificate signed by a CA in this PEM file.
+- `require_client_auth(false)`: call it after `with_client_auth(..)` to make client certificates optional. Clients without a certificate are accepted; a certificate that is presented must still be signed by the client CA. `require_client_auth(true)` without `with_client_auth(..)` has no CA to check against, so `load_server_config()` returns a `TlsError` (since 1.3.0; before that, every client was accepted).
+- `with_tls_versions`: only the listed versions are enabled. An empty list is a config error.
+- `with_cipher_suites`: only the listed suites are enabled, in the provider's preference order. Suites the `ring` provider does not support are ignored with a warning. If nothing usable is left for the enabled versions, loading fails.
+- `with_alpn_protocols`: ALPN protocols to advertise. The default is `h2` and `http/1.1`.
+- `generate_self_signed`: writes a self-signed certificate for `localhost` and its key, and returns a config that uses them. For development only. On Unix the key file is created with mode 0600.
+- `load_server_config`: builds the rustls config. Returns `ProtocolError::TlsError` if a file cannot be read or parsed, if the version or cipher suite settings leave nothing usable, or if client authentication is required without a client CA.
+- `calculate_cert_hash`: the SHA-256 fingerprint of a DER certificate, as 32 raw bytes. Use it with `TlsClientConfig::with_pinned_cert_hash`.
 
 ##### `TlsClientConfig`
 
+A builder for the client side:
+
 ```rust
-pub struct TlsClientConfig {
-    pub cert_path: Option<&'static str>,
-    pub key_path: Option<&'static str>,
-    pub ca_path: Option<&'static str>,
-    pub server_name: &'static str,
+impl TlsClientConfig {
+    pub fn new<S: Into<String>>(server_name: S) -> Self
+    pub fn with_root_ca<S: Into<String>>(self, ca_path: S) -> Self
+    pub fn with_client_certificate<S: Into<String>>(self, cert_path: S, key_path: S) -> Self
+    pub fn with_pinned_cert_hash(self, hash: Vec<u8>) -> Self
+    pub fn insecure(self) -> Self
+    pub fn with_tls_versions(self, versions: Vec<TlsVersion>) -> Self
+    pub fn with_cipher_suites(self, cipher_suites: Vec<rustls::SupportedCipherSuite>) -> Self
+    pub fn load_client_config(&self) -> Result<rustls::ClientConfig>
+    pub fn server_name(&self) -> Result<ServerName<'_>>
+    pub fn server_name_string(&self) -> String
 }
 ```
+
+- `new`: the server name is sent as SNI and the server certificate must match it. By default the certificate is validated against the system root store.
+- `with_root_ca` (new in 1.3.0): trust only the CA certificates in this PEM file instead of the system roots. Use it for servers with a private CA. Chain and hostname validation still apply. Combining it with `insecure()` is a config error.
+- `with_client_certificate`: client certificate and PKCS#8 key for mTLS.
+- `with_pinned_cert_hash`: only accept a server whose certificate has this SHA-256 fingerprint (32 raw bytes from `TlsServerConfig::calculate_cert_hash`, not hex). Without `insecure()` the pin is checked on top of CA and hostname validation (since 1.3.0; before that, the pin was ignored unless `insecure()` was set). With `insecure()` it replaces CA validation. In both cases the server must prove it holds the certificate's private key. A pin that is not 32 bytes long makes `load_client_config()` return a `TlsError`.
+- `insecure`: skips CA and hostname validation. Any certificate is accepted unless one is pinned. Only for development and testing; for a private CA, use `with_root_ca` instead.
+- `with_tls_versions` / `with_cipher_suites`: same rules as on the server.
+- `load_client_config`: builds the rustls config. Returns `ProtocolError::TlsError` for a pin that is not 32 bytes, for `with_root_ca` combined with `insecure()`, for files that cannot be read or parsed, for version or cipher suite settings that leave nothing usable, and when the system root store is empty (the error suggests `with_root_ca`).
+
+##### `TlsVersion`
+
+```rust
+pub enum TlsVersion {
+    TLS12,
+    TLS13,
+    All, // TLS 1.2 and 1.3
+}
+```
+
+Cipher suites are rustls values, for example `rustls::crypto::ring::cipher_suite::TLS13_AES_256_GCM_SHA384`. To name them, add `rustls = "0.23"` to your own `Cargo.toml`.
 
 #### Functions
 
 ##### `start_server`
 
-Starts a TLS server at the given address with the specified TLS configuration.
+Starts a TLS server at the given address. It echoes every packet back to the sender, which makes it useful for testing; for a server that dispatches `Message`s, use [`service::tls_daemon`](#tls-daemon). Each client must finish the TLS handshake within 10 seconds.
 
 ```rust
-pub async fn start_server(addr: &str, config: TlsConfig) -> Result<()>
+pub async fn start_server(addr: &str, config: TlsServerConfig) -> Result<()>
 ```
 
 **Parameters:**
@@ -732,32 +789,32 @@ pub async fn start_server(addr: &str, config: TlsConfig) -> Result<()>
 - `config`: The TLS configuration for the server
 
 **Returns:**
-- `Result<()>`: A result indicating success or an error
+- `Result<()>`: Runs until binding or accepting fails. Configuration errors from `load_server_config()` are returned before binding.
 
 **Example:**
 ```rust
-use network_protocol::transport::tls;
-use network_protocol::transport::tls::TlsConfig;
+use network_protocol::transport::tls::{self, TlsServerConfig};
 
 #[tokio::main]
-async fn main() -> network_protocol::error::Result<()> {
-    let config = TlsConfig {
-        cert_path: "server.crt",
-        key_path: "server.key",
-        ca_path: Some("ca.crt"),   // For client cert validation (mTLS)
-        verify_client: true,        // Enable mTLS
-    };
-    
-    tls::start_server("127.0.0.1:8443", config).await
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = TlsServerConfig::new("server.crt", "server.key")
+        .with_client_auth("client-ca.crt") // Require client certificates (mTLS)
+        .require_client_auth(false);       // ...or make them optional
+
+    tls::start_server("127.0.0.1:8443", config).await?;
+    Ok(())
 }
 ```
 
 ##### `connect`
 
-Connects to a TLS server and returns a framed transport.
+Connects to a TLS server and returns a framed transport. The handshake must finish within 10 seconds, otherwise it fails with `ProtocolError::Timeout`.
 
 ```rust
-pub async fn connect(addr: &str, config: TlsClientConfig) -> Result<Framed<TlsStream<TcpStream>, PacketCodec>>
+pub async fn connect(
+    addr: &str,
+    config: TlsClientConfig,
+) -> Result<Framed<tokio_rustls::client::TlsStream<TcpStream>, PacketCodec>>
 ```
 
 **Parameters:**
@@ -765,63 +822,79 @@ pub async fn connect(addr: &str, config: TlsClientConfig) -> Result<Framed<TlsSt
 - `config`: The TLS client configuration
 
 **Returns:**
-- `Result<Framed<TlsStream<TcpStream>, PacketCodec>>`: A result containing either the framed connection or an error
+- A result containing either the framed connection or an error
 
 **Example:**
 ```rust
-use network_protocol::transport::tls;
-use network_protocol::transport::tls::TlsClientConfig;
+use network_protocol::transport::tls::{self, TlsClientConfig};
 
 #[tokio::main]
-async fn main() -> network_protocol::error::Result<()> {
-    let config = TlsClientConfig {
-        cert_path: Some("client.crt"),  // For mTLS
-        key_path: Some("client.key"),   // For mTLS
-        ca_path: Some("ca.crt"),        // For server cert validation
-        server_name: "example.com",     // Server Name Indication
-    };
-    
-    let framed = tls::connect("127.0.0.1:8443", config).await?;
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = TlsClientConfig::new("example.com") // Server Name Indication
+        .with_root_ca("ca.crt")                      // For server cert validation
+        .with_client_certificate("client.crt", "client.key"); // For mTLS
+
+    let _framed = tls::connect("127.0.0.1:8443", config).await?;
     println!("Connected to TLS server!");
     Ok(())
 }
 ```
 
-##### `generate_self_signed_cert`
+**Certificate pinning example:**
 
-Generates a self-signed certificate and private key for development purposes.
+Reading the certificate uses `rustls::pki_types`, so this needs `rustls = "0.23"` in your own `Cargo.toml`.
 
 ```rust
-pub fn generate_self_signed_cert(
-    common_name: &str,
-    cert_path: &Path,
-    key_path: &Path
-) -> Result<()>
+use network_protocol::transport::tls::{self, TlsClientConfig, TlsServerConfig};
+use rustls::pki_types::{pem::PemObject, CertificateDer};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let server_cert = CertificateDer::from_pem_file("server.crt")?;
+    let pin = TlsServerConfig::calculate_cert_hash(&server_cert); // 32 raw bytes
+
+    let config = TlsClientConfig::new("example.com")
+        .with_root_ca("ca.crt")      // The chain and hostname are still validated
+        .with_pinned_cert_hash(pin); // ...and the fingerprint must match too
+
+    let _framed = tls::connect("127.0.0.1:8443", config).await?;
+    Ok(())
+}
+```
+
+##### `TlsServerConfig::generate_self_signed`
+
+Generates a self-signed certificate and private key for `localhost`, for development purposes.
+
+```rust
+pub fn generate_self_signed<P: AsRef<Path>>(cert_path: P, key_path: P) -> io::Result<TlsServerConfig>
 ```
 
 **Parameters:**
-- `common_name`: The common name for the certificate (e.g., "localhost")
 - `cert_path`: The path to save the certificate to
-- `key_path`: The path to save the private key to
+- `key_path`: The path to save the private key to (mode 0600 on Unix)
 
 **Returns:**
-- `Result<()>`: A result indicating success or an error
+- `io::Result<TlsServerConfig>`: A server config that uses the new files
 
 **Example:**
 ```rust
-use network_protocol::transport::tls;
-use std::path::Path;
+use network_protocol::transport::tls::{self, TlsClientConfig, TlsServerConfig};
+use rustls::pki_types::{pem::PemObject, CertificateDer};
 
 #[tokio::main]
-async fn main() -> network_protocol::error::Result<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Generate a self-signed certificate for development
-    tls::generate_self_signed_cert(
-        "localhost",
-        Path::new("dev_cert.pem"),
-        Path::new("dev_key.pem")
-    )?;
-    
-    println!("Generated self-signed certificate");
+    let server_config = TlsServerConfig::generate_self_signed("dev_cert.pem", "dev_key.pem")?;
+    tokio::spawn(tls::start_server("127.0.0.1:8443", server_config));
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await; // Let the server bind
+
+    // No CA signed this certificate, so pin it and skip CA validation
+    let pin = TlsServerConfig::calculate_cert_hash(&CertificateDer::from_pem_file("dev_cert.pem")?);
+    let client_config = TlsClientConfig::new("localhost")
+        .insecure()
+        .with_pinned_cert_hash(pin);
+    let _framed = tls::connect("127.0.0.1:8443", client_config).await?;
     Ok(())
 }
 ```
@@ -977,199 +1050,197 @@ pub enum Message {
 
 ### Handshake
 
-The handshake module provides functions for performing secure handshakes between client and server using Elliptic Curve Diffie-Hellman (ECDH) key exchange. It offers strong security guarantees including forward secrecy, protection against replay attacks, and man-in-the-middle attack prevention.
+The handshake module provides functions for performing secure handshakes between client and server using Elliptic Curve Diffie-Hellman (ECDH) key exchange over x25519. `Client` and `service::daemon` run it for you; call these functions directly only when you build your own transport.
+
+State is kept per connection: each side gets a state value from the first step and passes it into the next one. Nothing is stored globally, so concurrent handshakes do not interfere.
+
+#### Types
+
+```rust
+pub struct ClientHandshakeState { /* private fields */ }
+pub struct ServerHandshakeState { /* private fields */ }
+```
+
+Both hold the ephemeral secret, public keys and nonces for one handshake. They are zeroized when dropped.
 
 #### Secure ECDH Handshake
 
 ##### `client_secure_handshake_init`
 
-Initiates a secure handshake from the client side by generating an ephemeral key pair, timestamp, and nonce.
+Starts a handshake on the client side by generating an ephemeral key pair, a timestamp and a nonce.
 
 ```rust
-pub fn client_secure_handshake_init() -> Result<Message>
+pub fn client_secure_handshake_init() -> Result<(ClientHandshakeState, Message)>
 ```
 
 **Returns:**
-- `Result<Message>`: A `SecureHandshakeInit` message containing:
+- The client state to pass to `client_secure_handshake_verify`, and a `SecureHandshakeInit` message containing:
   - The client's public key as a 32-byte array
-  - Current timestamp to prevent replay attacks
-  - A cryptographically secure random 16-byte nonce
+  - The current time in milliseconds since the Unix epoch
+  - A random 16-byte nonce
 
-**Notes:**
-- Internally stores the client's ephemeral secret and nonce in thread-safe storage
-- Returns an error if the thread-safe storage can't be accessed
+**Errors:**
+- Returns `ProtocolError::Custom` if the system clock is before the Unix epoch
 
 ##### `server_secure_handshake_response`
 
-Processes a client's handshake initialization and generates a response.
+Processes a client's `SecureHandshakeInit` and generates a response.
 
 ```rust
 pub fn server_secure_handshake_response(
-    client_pub_key: [u8; 32], 
-    client_nonce: [u8; 16], 
-    client_timestamp: u64
-) -> Result<Message>
+    client_pub_key: [u8; 32],
+    client_nonce: [u8; 16],
+    client_timestamp: u64,
+    peer_id: &str,
+    replay_cache: &mut ReplayCache,
+) -> Result<(ServerHandshakeState, Message)>
 ```
 
 **Parameters:**
-- `client_pub_key`: The client's public key as a 32-byte array
-- `client_nonce`: The client's random nonce as a 16-byte array
+- `client_pub_key`: The client's public key
+- `client_nonce`: The client's random nonce
 - `client_timestamp`: The client's timestamp (milliseconds since epoch)
+- `peer_id`: An identifier for the peer, used as the replay cache key (the daemon uses the peer's socket address)
+- `replay_cache`: Records nonces already seen from this peer
 
 **Returns:**
-- `Result<Message>`: A `SecureHandshakeResponse` message containing:
-  - The server's public key as a 32-byte array
-  - A new server-generated 16-byte nonce
-  - A SHA-256 hash of the client's nonce for verification
+- The server state to pass to `server_secure_handshake_finalize`, and a `SecureHandshakeResponse` message containing:
+  - The server's public key
+  - A new 16-byte server nonce
+  - A SHA-256 hash of the client's nonce
 
 **Errors:**
-- Returns `ProtocolError::HandshakeError` if the timestamp is invalid (too old or from the future)
-- Returns `ProtocolError::HandshakeError` if the thread-safe storage can't be accessed
+- `ProtocolError::HandshakeError` if the timestamp is more than 30 seconds old or more than 2 seconds in the future
+- `ProtocolError::HandshakeError` if the replay cache has already seen this nonce and timestamp from this peer
 
 ##### `client_secure_handshake_verify`
 
-Verifies the server's handshake response and creates a confirmation message.
+Checks the server's response and creates the confirmation message.
 
 ```rust
 pub fn client_secure_handshake_verify(
-    server_pub_key: [u8; 32], 
-    server_nonce: [u8; 16], 
-    nonce_verification: [u8; 32]
-) -> Result<Message>
+    state: ClientHandshakeState,
+    server_pub_key: [u8; 32],
+    server_nonce: [u8; 16],
+    nonce_verification: [u8; 32],
+    peer_id: &str,
+    replay_cache: &mut ReplayCache,
+) -> Result<(ClientHandshakeState, Message)>
 ```
 
 **Parameters:**
-- `server_pub_key`: The server's public key as a 32-byte array
-- `server_nonce`: The server's random nonce as a 16-byte array
-- `nonce_verification`: SHA-256 hash of the client's nonce
+- `state`: The state returned by `client_secure_handshake_init`
+- `server_pub_key`, `server_nonce`, `nonce_verification`: The fields of the server's `SecureHandshakeResponse`
+- `peer_id`, `replay_cache`: As on the server side (the client uses the server address)
 
 **Returns:**
-- `Result<Message>`: A `SecureHandshakeConfirm` message containing a SHA-256 hash of the server's nonce
+- The updated client state for `client_derive_session_key`, and a `SecureHandshakeConfirm` message containing a SHA-256 hash of the server's nonce
 
 **Errors:**
-- Returns `ProtocolError::HandshakeError` if the server's verification of the client nonce fails
-- Returns `ProtocolError::HandshakeError` if the thread-safe storage can't be accessed
-- Returns `ProtocolError::HandshakeError` if the client nonce isn't found in storage
+- `ProtocolError::HandshakeError` if `nonce_verification` is not the hash of the client's nonce, or if the server nonce was already seen
 
 ##### `server_secure_handshake_finalize`
 
-Finalizes the handshake process on the server side and derives the session key.
+Checks the client's confirmation and derives the session key on the server side.
 
 ```rust
-pub fn server_secure_handshake_finalize(nonce_verification: [u8; 32]) -> Result<[u8; 32]>
+pub fn server_secure_handshake_finalize(
+    state: ServerHandshakeState,
+    nonce_verification: [u8; 32],
+) -> Result<[u8; 32]>
 ```
 
-**Parameters:**
-- `nonce_verification`: SHA-256 hash of the server's nonce received from client
-
 **Returns:**
-- `Result<[u8; 32]>`: A 32-byte session key derived from the shared secret and both nonces
+- A 32-byte session key derived with SHA-256 from the ECDH shared secret and both nonces
 
 **Errors:**
-- Returns `ProtocolError::HandshakeError` if client's verification of the server nonce fails
-- Returns `ProtocolError::HandshakeError` if any required data is missing from storage
+- `ProtocolError::HandshakeError` if `nonce_verification` is not the hash of the server's nonce, or if the state is incomplete
 
 ##### `client_derive_session_key`
 
-Derives the session key on the client side after a successful handshake.
+Derives the same session key on the client side. Call it after `client_secure_handshake_verify`.
 
 ```rust
-pub fn client_derive_session_key() -> Result<[u8; 32]>
+pub fn client_derive_session_key(state: ClientHandshakeState) -> Result<[u8; 32]>
 ```
 
-**Returns:**
-- `Result<[u8; 32]>`: A 32-byte session key derived from the shared secret and both nonces
-
 **Errors:**
-- Returns `ProtocolError::HandshakeError` if any required data is missing from storage
+- `ProtocolError::HandshakeError` if the state is incomplete
 
-##### `clear_handshake_data`
-
-Clears all sensitive handshake data from memory, including ephemeral keys and nonces.
+##### `verify_timestamp`
 
 ```rust
-pub fn clear_handshake_data() -> Result<()>
+pub fn verify_timestamp(timestamp: u64, max_age_seconds: u64) -> bool
 ```
 
-**Returns:**
-- `Result<()>`: Success or an error if clearing fails
-
-**Errors:**
-- Returns `ProtocolError::HandshakeError` if the thread-safe storage can't be accessed
+Returns `true` if `timestamp` (milliseconds since epoch) is no older than `max_age_seconds` and no more than 2 seconds in the future.
 
 #### Security Features
 
 - **Forward Secrecy**: Uses ephemeral x25519 keys that are discarded after session establishment
-- **Anti-Replay Protection**: Validates timestamps to prevent replay attacks (30-second threshold)
-- **Cryptographic Nonces**: Uses secure random nonces to prevent replay and ensure unique sessions
-- **Man-in-the-Middle Protection**: Full key verification through double-sided nonce verification
-- **Session Key Derivation**: Combines shared secret with client and server nonces using SHA-256
-- **Thread-Safety**: All handshake state is stored in thread-safe containers using `Mutex`
+- **Anti-Replay Protection**: Rejects timestamps older than 30 seconds and nonces already in the `ReplayCache`
+- **Cryptographic Nonces**: Uses random nonces from the OS generator for every handshake
+- **Session Key Derivation**: Combines the shared secret with the client and server nonces using SHA-256
+- **Zeroize**: Handshake state is cleared from memory when dropped
+
+The handshake does not authenticate either side: there are no certificates or long-term keys, so it does not stop an active man-in-the-middle who runs a handshake with each side. When you need to know which server you are talking to, use the TLS transport with CA validation or certificate pinning.
 
 **Example:**
 ```rust
+use network_protocol::error::{ProtocolError, Result};
 use network_protocol::protocol::handshake;
 use network_protocol::protocol::message::Message;
-use network_protocol::error::Result;
+use network_protocol::utils::replay_cache::ReplayCache;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    let mut client_cache = ReplayCache::new();
+    let mut server_cache = ReplayCache::new();
+
     // Client initiates handshake
-    let init_msg = handshake::client_secure_handshake_init()?;
-    
-    // In a real application, this message would be sent over the network
-    // Here we extract the values directly for demonstration
-    let (client_pub_key, client_nonce, client_timestamp) = match &init_msg {
-        Message::SecureHandshakeInit { pub_key, timestamp, nonce } => {
-            (*pub_key, *nonce, *timestamp)
-        },
-        _ => panic!("Unexpected message type"),
+    let (client_state, init_msg) = handshake::client_secure_handshake_init()?;
+
+    // In a real application, each message is sent over the network
+    let Message::SecureHandshakeInit { pub_key, timestamp, nonce } = init_msg else {
+        return Err(ProtocolError::UnexpectedMessage);
     };
-    
+
     // Server processes handshake initiation
-    let response_msg = handshake::server_secure_handshake_response(
-        client_pub_key,
-        client_nonce,
-        client_timestamp
+    let (server_state, response_msg) = handshake::server_secure_handshake_response(
+        pub_key,
+        nonce,
+        timestamp,
+        "client-1",
+        &mut server_cache,
     )?;
-    
-    // Extract server's response data
-    let (server_pub_key, server_nonce, nonce_verification) = match &response_msg {
-        Message::SecureHandshakeResponse { pub_key, nonce, nonce_verification } => {
-            (*pub_key, *nonce, *nonce_verification)
-        },
-        _ => panic!("Unexpected message type"),
+
+    let Message::SecureHandshakeResponse { pub_key, nonce, nonce_verification } = response_msg else {
+        return Err(ProtocolError::UnexpectedMessage);
     };
-    
+
     // Client verifies server response
-    let confirm_msg = handshake::client_secure_handshake_verify(
-        server_pub_key,
-        server_nonce,
-        nonce_verification
+    let (client_state, confirm_msg) = handshake::client_secure_handshake_verify(
+        client_state,
+        pub_key,
+        nonce,
+        nonce_verification,
+        "server-1",
+        &mut client_cache,
     )?;
-    
-    // Extract confirmation data
-    let client_verification = match &confirm_msg {
-        Message::SecureHandshakeConfirm { nonce_verification } => {
-            *nonce_verification
-        },
-        _ => panic!("Unexpected message type"),
+
+    let Message::SecureHandshakeConfirm { nonce_verification } = confirm_msg else {
+        return Err(ProtocolError::UnexpectedMessage);
     };
-    
+
     // Server finalizes handshake and gets session key
-    let server_session_key = handshake::server_secure_handshake_finalize(client_verification)?;
-    
+    let server_key = handshake::server_secure_handshake_finalize(server_state, nonce_verification)?;
+
     // Client derives the same session key
-    let client_session_key = handshake::client_derive_session_key()?;
-    
-    // At this point, both sides have the same session key
-    // In a real application, you would verify this with assert_eq!(client_session_key, server_session_key);
-    
-    // Clean up sensitive data
-    handshake::clear_handshake_data()?;
-    
+    let client_key = handshake::client_derive_session_key(client_state)?;
+    assert_eq!(client_key, server_key);
+
     Ok(())
 }
+```
 
 #### Legacy Handshake Support
 
@@ -1479,52 +1550,39 @@ async fn main() {
 
 ### Client
 
-The client module provides functionality for establishing secure connections to servers with support for timeouts, auto-reconnection, and graceful shutdown.
+The client module provides a TCP client that runs the secure ECDH handshake and encrypts every message after it, with timeouts for connecting, sending and waiting for responses.
 
 #### Struct Definition
 
 ```rust
 pub struct Client {
-    framed: FramedConnection,
-    secure: SecureConnection,
+    // private fields
 }
 ```
 
 #### Methods
 
-##### `connect_tcp` and `connect_with_config`
+##### `connect` and `connect_with_config`
 
-Connects to a remote TCP server with secure communication.
+Connects to a remote TCP server and performs the secure handshake.
 
 ```rust
-pub async fn connect_tcp(addr: &str) -> Result<Self>
+pub async fn connect(addr: &str) -> Result<Self>
 pub async fn connect_with_config(config: ClientConfig) -> Result<Self>
 ```
 
 **Parameters:**
-- `addr`: The address to connect to (e.g., "127.0.0.1:8080")
-- `config`: Client configuration including timeouts and reconnection settings
+- `addr`: The address to connect to (e.g., "127.0.0.1:8080"). `connect` uses the default `ClientConfig` with this address.
+- `config`: Client configuration. `connection_timeout` bounds the TCP connect and the wait for the server's handshake response; `operation_timeout` bounds each `send`.
 
 **Returns:**
-- `Result<Client>`: A result containing either a connected client or an error
+- `Result<Client>`: A result containing either a connected client or an error. A timeout is reported as `ProtocolError::Timeout`.
 
-##### `connect_uds`
-
-Connects to a Unix domain socket server with secure communication.
-
-```rust
-pub async fn connect_uds<P: AsRef<Path>>(path: P) -> Result<Self>
-```
-
-**Parameters:**
-- `path`: The path to the Unix domain socket
-
-**Returns:**
-- `Result<Client>`: A result containing either a connected client or an error
+`Client` does not reconnect. The `auto_reconnect`, `max_reconnect_attempts` and `reconnect_delay` fields of `ClientConfig` are deprecated in 1.3.0 and have no effect. To reconnect, call `connect_with_config` again.
 
 ##### `send`
 
-Sends a message to the server.
+Encrypts and sends a message to the server.
 
 ```rust
 pub async fn send(&mut self, msg: Message) -> Result<()>
@@ -1534,368 +1592,366 @@ pub async fn send(&mut self, msg: Message) -> Result<()>
 - `msg`: The message to send
 
 **Returns:**
-- `Result<()>`: A result indicating success or an error
+- `Result<()>`: A result indicating success or an error. Fails with `ProtocolError::Timeout` if the send takes longer than `ClientConfig::operation_timeout` (since 1.3.0).
 
-##### `receive`
+##### `recv`
 
-Receives a message from the server.
+Receives and decrypts a message from the server. It uses the default 5 second receive timeout.
 
 ```rust
-pub async fn receive(&mut self) -> Result<Message>
+pub async fn recv(&mut self) -> Result<Message>
 ```
 
 **Returns:**
 - `Result<Message>`: A result containing either the received message or an error
 
-##### `close`
+##### `send_and_wait`
 
-Closes the connection to the server.
+Sends a message and waits up to `ClientConfig::response_timeout` for the reply, sending keep-alive pings while it waits. `Pong` messages are skipped, so do not use it to wait for a reply to `Message::Ping`.
 
 ```rust
-pub async fn close(&mut self) -> Result<()>
+pub async fn send_and_wait(&mut self, msg: Message) -> Result<Message>
 ```
 
-**Returns:**
-- `Result<()>`: A result indicating success or an error
+##### `recv_with_keepalive` and `send_keepalive`
+
+```rust
+pub async fn recv_with_keepalive(&mut self, timeout_duration: Duration) -> Result<Message>
+pub async fn send_keepalive(&mut self) -> Result<()>
+```
+
+`recv_with_keepalive` waits up to `timeout_duration` for a message other than `Pong`, sending pings at the configured `heartbeat_interval`. It returns `ProtocolError::ConnectionTimeout` if the server stops answering. `send_keepalive` sends a single ping.
+
+There is no `close` method. Send `Message::Disconnect` to end the session cleanly, or drop the client to close the connection.
 
 **Example with Timeout Handling:**
 ```rust
-use network_protocol::utils::logging;
-use network_protocol::service::client::{self, ClientConfig};
-use network_protocol::protocol::message::Message;
+use network_protocol::config::ClientConfig;
 use network_protocol::error::ProtocolError;
+use network_protocol::protocol::message::Message;
+use network_protocol::service::client::Client;
 use std::time::Duration;
-use tracing::{info, error};
-use tokio::time::timeout;
+use tracing::{error, info};
 
 #[tokio::main]
-async fn main() -> Result<(), ProtocolError> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize structured logging
-    logging::init_logging(Some("info"), None)?;
-    
-    // Configure client with timeouts and reconnection settings
+    network_protocol::init();
+
+    // Configure client timeouts
     let config = ClientConfig {
         address: "127.0.0.1:9000".to_string(),
         connection_timeout: Duration::from_secs(5),
         operation_timeout: Duration::from_secs(3),
-        auto_reconnect: true,
-        max_reconnect_attempts: 3,
+        ..Default::default()
     };
-    
-    // Connect with timeout handling
+
+    // Connect; connection_timeout applies to the connect and to the handshake
     info!("Connecting to server...");
-    let mut conn = match timeout(Duration::from_secs(5), client::connect_with_config(config)).await {
-        Ok(Ok(conn)) => conn,
-        Ok(Err(e)) => {
-            error!(error = ?e, "Failed to connect to server");
-            return Err(e);
-        }
-        Err(_) => {
+    let mut client = match Client::connect_with_config(config).await {
+        Ok(client) => client,
+        Err(ProtocolError::Timeout) => {
             error!("Connection timeout");
-            return Err(ProtocolError::Timeout);
+            return Err(ProtocolError::Timeout.into());
+        }
+        Err(e) => {
+            error!(error = ?e, "Failed to connect to server");
+            return Err(e.into());
         }
     };
-    
+
     info!("Connected successfully");
-    
-    // Send message with timeout
-    let msg = Message::Echo("hello".into());
-    match timeout(Duration::from_secs(3), conn.send(msg)).await {
-        Ok(Ok(_)) => info!("Message sent successfully"),
-        Ok(Err(e)) => {
-            error!(error = ?e, "Failed to send message");
-            return Err(e);
-        }
-        Err(_) => {
+
+    // Send message; operation_timeout applies
+    match client.send(Message::Echo("hello".into())).await {
+        Ok(()) => info!("Message sent successfully"),
+        Err(ProtocolError::Timeout) => {
             error!("Send timeout");
-            return Err(ProtocolError::Timeout);
+            return Err(ProtocolError::Timeout.into());
+        }
+        Err(e) => {
+            error!(error = ?e, "Failed to send message");
+            return Err(e.into());
         }
     }
-    
+
+    let reply = client.recv().await?;
+    info!(reply = ?reply, "Received reply");
+
     // Close connection gracefully
-    conn.close().await
+    client.send(Message::Disconnect).await?;
+    Ok(())
 }
 ```
 
 ### Daemon
 
-The daemon module provides functionality for running a server that accepts client connections with support for backpressure control, timeouts, heartbeats, and graceful shutdown.
+The daemon module runs a TCP server that performs the secure handshake with each client, then dispatches the decrypted messages, with backpressure, timeouts, heartbeats and graceful shutdown.
 
 #### Functions
 
-##### `new` and `new_with_config`
+##### `start`, `start_with_config`, `start_with_shutdown` and `start_with_config_and_shutdown`
 
-Creates a new server daemon with graceful shutdown support.
+Run a server in the current task with the built-in `PING` and `ECHO` handlers.
 
 ```rust
-pub fn new(addr: &str, dispatcher: Arc<dyn MessageDispatcher>) -> ServerHandle
-pub fn new_with_config(config: ServerConfig, dispatcher: Arc<dyn MessageDispatcher>) -> ServerHandle
+pub async fn start(addr: &str) -> Result<()>
+pub async fn start_with_config(config: ServerConfig) -> Result<()>
+pub async fn start_with_shutdown(addr: &str, shutdown_rx: tokio::sync::oneshot::Receiver<()>) -> Result<()>
+pub async fn start_with_config_and_shutdown(
+    config: ServerConfig,
+    shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+) -> Result<()>
 ```
 
 **Parameters:**
-- `addr`: The address to bind the server to (e.g., "127.0.0.1:8080")
-- `config`: Server configuration including backpressure and timeout settings
-- `dispatcher`: The message dispatcher to use for handling messages
+- `addr`: The address to bind the server to (e.g., "127.0.0.1:8080"). The other settings are the `ServerConfig` defaults.
+- `config`: Server configuration (see [ServerConfig](#serverconfig))
+- `shutdown_rx`: The server shuts down gracefully when `()` is sent on the matching sender
 
 **Returns:**
-- `ServerHandle`: A handle to control the server, including shutdown
+- `Result<()>`: Returns after a graceful shutdown, or with an error if the address cannot be bound
 
-##### `run`
+The server also shuts down on Ctrl+C. On shutdown it waits up to `shutdown_timeout` for open connections to close.
 
-Runs the server until it is shut down.
+##### `start_daemon_no_signals`
+
+Starts a server in a background task with your own dispatcher and returns a handle to stop it.
 
 ```rust
-pub async fn run(&self) -> Result<()>
+pub async fn start_daemon_no_signals(config: ServerConfig, dispatcher: Arc<Dispatcher>) -> Result<Daemon>
 ```
 
-**Returns:**
-- `Result<()>`: A result indicating success or an error when calling `run()`
-
 **Parameters:**
-- `addr`: The address to bind the server to (e.g., "127.0.0.1:8080")
-- `dispatcher`: The message dispatcher to use for handling messages
+- `config`: Server configuration
+- `dispatcher`: The dispatcher that handles every message. Register all the handlers you need (including `PING` and `ECHO` if clients use them) before calling. Before 1.3.0 this argument was ignored and the default handlers were used.
 
 **Returns:**
-- `ServerHandle`: A handle to control the server, including shutdown
-- `Result<()>`: A result indicating success or an error when calling `run()`
+- `Result<Daemon>`: A handle to the running server
+
+This server does not install a Ctrl+C handler: it stops only when `Daemon::shutdown()` is called (before 1.3.0 it also stopped on Ctrl+C). Handle signals yourself, as in the example below.
+
+##### Deprecated
+
+- `new_with_config(config, dispatcher) -> Daemon`: deprecated in 1.3.0. It never started a server and ignored the dispatcher. Use `start_daemon_no_signals`.
 
 #### Structs
 
-##### `ServerHandle`
+##### `Daemon`
 
 ```rust
-pub struct ServerHandle {
-    // internal fields omitted
+pub struct Daemon {
+    pub address: String,
+    // private fields
 }
 ```
 
 #### Methods
 
-##### `ServerHandle::clone`
+##### `Daemon::shutdown`
 
-Clones the server handle for use in another thread.
+Signals the server to shut down gracefully. It stops accepting connections and waits up to `ServerConfig::shutdown_timeout` for open connections to close.
 
 ```rust
-pub fn clone(&self) -> Self
+pub async fn shutdown(&mut self) -> Result<()>
 ```
 
 **Returns:**
-- `ServerHandle`: A new handle to the same server
+- `Result<()>`: An error if `shutdown` was already called
 
-##### `ServerHandle::shutdown`
-
-Initiates a graceful shutdown of the server.
-
-```rust
-pub async fn shutdown(&self, timeout: Option<Duration>)
-```
-
-**Parameters:**
-- `timeout`: Optional maximum duration to wait for connections to close before forcing shutdown
+`Daemon::run()` and `Daemon::shutdown_with_timeout()` are deprecated in 1.3.0: `run()` returns immediately (the server is already running), and `shutdown_with_timeout()` ignores its timeout. Use `shutdown()` and set `ServerConfig::shutdown_timeout`.
 
 **Example with Backpressure and Timeouts:**
 ```rust
-use network_protocol::service::daemon::{self, ServerConfig};
+use network_protocol::config::ServerConfig;
 use network_protocol::protocol::dispatcher::Dispatcher;
-use network_protocol::utils::logging;
+use network_protocol::protocol::message::Message;
+use network_protocol::service::daemon;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize structured logging
-    logging::init_logging(Some("info"), None).expect("Failed to initialize logging");
-    
+    network_protocol::init();
+
     let dispatcher = Arc::new(Dispatcher::default());
-    
+    dispatcher.register("PING", |_| Ok(Message::Pong))?;
+    dispatcher.register("ECHO", |msg| Ok(msg.clone()))?;
+
     // Configure server with backpressure settings
     let config = ServerConfig {
         address: "127.0.0.1:9000".to_string(),
-        backpressure_limit: 100, // Limit pending messages
-        connection_timeout: Duration::from_secs(30),
+        backpressure_limit: 100, // Messages queued per connection before reads pause
+        connection_timeout: Duration::from_secs(10), // Each handshake step
         heartbeat_interval: Duration::from_secs(15),
         shutdown_timeout: Duration::from_secs(10),
+        max_connections: 1000, // Extra connections are closed on accept
     };
-    
+
     // Start server with configuration
-    let server = daemon::new_with_config(config, dispatcher);
-    
-    // Handle Ctrl+C for graceful shutdown
-    let server_clone = server.clone();
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.expect("Failed to listen for ctrl+c");
-        info!("Initiating graceful shutdown...");
-        server_clone.shutdown(Some(Duration::from_secs(10))).await;
-    });
-    
-    // Run server until stopped
-    info!("Server starting on 127.0.0.1:9000");
-    server.run().await
+    let mut server = daemon::start_daemon_no_signals(config, dispatcher).await?;
+    info!(address = %server.address, "Server started");
+
+    // Shut down on Ctrl+C
+    tokio::signal::ctrl_c().await?;
+    info!("Initiating graceful shutdown...");
+    server.shutdown().await?;
+    Ok(())
 }
 ```
 
-**Example:**
+**Example with an external shutdown signal:**
 ```rust
 use network_protocol::service::daemon;
-use network_protocol::protocol::dispatcher::EchoDispatcher;
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::signal;
+use tokio::sync::oneshot;
 
 #[tokio::main]
-async fn main() -> network_protocol::error::Result<()> {
-    let dispatcher = Arc::new(EchoDispatcher::new());
-    
-    // Create server with handle for shutdown
-    let server = daemon::new("127.0.0.1:8080", dispatcher);
-    
-    // Set up graceful shutdown on Ctrl+C
-    let server_clone = server.clone();
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+    // Stop the server after 60 seconds
     tokio::spawn(async move {
-        signal::ctrl_c().await.expect("Failed to listen for ctrl+c");
-        println!("Shutting down gracefully...");
-        // Wait up to 10 seconds for connections to close
-        server_clone.shutdown(Some(Duration::from_secs(10))).await;
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        let _ = shutdown_tx.send(());
     });
-    
-    // Run server until shutdown is called
-    server.run().await?;
+
+    // Run server until shutdown is signalled
+    daemon::start_with_shutdown("127.0.0.1:8080", shutdown_rx).await?;
     println!("Server has shut down successfully");
     Ok(())
 }
 ```
 
-##### `run_uds_server`
-
-Runs a Unix domain socket server with the provided dispatcher.
-
-```rust
-pub async fn run_uds_server<P: AsRef<Path>>(path: P, dispatcher: Arc<Dispatcher>) -> Result<()>
-```
-
-**Parameters:**
-- `path`: The path to the Unix domain socket
-- `dispatcher`: An Arc-wrapped dispatcher for handling incoming messages
-
-**Returns:**
-- `Result<()>`: A result indicating success or an error
-
-**Example:**
-```rust
-use network_protocol::service::daemon;
-use network_protocol::protocol::dispatcher::Dispatcher;
-use network_protocol::protocol::message::Message;
-use std::sync::Arc;
-
-#[tokio::main]
-async fn main() -> network_protocol::error::Result<()> {
-    // Create a dispatcher
-    let dispatcher = Arc::new(Dispatcher::new());
-    
-    // Register handlers
-    let dispatcher_clone = Arc::clone(&dispatcher);
-    dispatcher_clone.register("PING", |_| Ok(Message::Pong));
-    dispatcher_clone.register("ECHO", |msg| {
-        match msg {
-            Message::Echo(s) => Ok(Message::Echo(s.clone())),
-            _ => Ok(Message::Unknown),
-        }
-    });
-    
-    // Run the server
-    println!("Starting server on 127.0.0.1:8080");
-    daemon::run_tcp_server("127.0.0.1:8080", dispatcher).await
-}
-```
-
 ### TLS Daemon
 
-The TLS daemon module provides functionality for running a TLS-secured server that accepts client connections with certificate validation.
+The TLS daemon module runs a TLS server that dispatches `Message`s. TLS provides the encryption, so there is no separate ECDH handshake. The server registers its own `PING` and `ECHO` handlers; a custom dispatcher cannot be passed in.
 
 #### Functions
 
 ##### `start`
 
-Starts a TLS server with the provided configuration and message dispatcher.
+Starts a TLS server and runs it until Ctrl+C.
 
 ```rust
-pub async fn start(addr: &str, tls_config: TlsConfig) -> Result<()>
+pub async fn start(addr: &str, tls_config: TlsServerConfig) -> Result<()>
 ```
 
 **Parameters:**
 - `addr`: The address to bind the server to (e.g., "127.0.0.1:8443")
-- `tls_config`: The TLS configuration for the server
+- `tls_config`: The TLS configuration for the server (see [TLS Transport](#tls-transport))
 
 **Returns:**
-- `Result<()>`: A result indicating success or an error
+- `Result<()>`: Returns after a graceful shutdown, or with an error if the TLS configuration is invalid or the address cannot be bound
 
-##### `new` and `run`
+Before 1.3.0 this function returned about half a second after starting.
 
-Creates and runs a new TLS server daemon with graceful shutdown support.
+##### `start_with_shutdown`
+
+Starts a TLS server that shuts down when `()` is sent on the channel.
 
 ```rust
-pub fn new(addr: &str, tls_config: TlsConfig, dispatcher: Arc<dyn MessageDispatcher>) -> ServerHandle
-pub async fn run(&self) -> Result<()>
+pub async fn start_with_shutdown(
+    addr: &str,
+    tls_config: TlsServerConfig,
+    shutdown_rx: tokio::sync::mpsc::Receiver<()>,
+) -> Result<()>
 ```
 
-**Parameters:**
-- `addr`: The address to bind the server to (e.g., "127.0.0.1:8443")
-- `tls_config`: The TLS configuration for the server
-- `dispatcher`: The message dispatcher to use for handling messages
-
-**Returns:**
-- `ServerHandle`: A handle to control the server, including shutdown
-- `Result<()>`: A result indicating success or an error when calling `run()`
+Dropping every sender without sending does not stop the server. On shutdown it waits up to 10 seconds for open connections to close. Each client must finish the TLS handshake within 10 seconds.
 
 **Example:**
 ```rust
 use network_protocol::service::tls_daemon;
-use network_protocol::transport::tls::TlsConfig;
-use network_protocol::protocol::dispatcher::EchoDispatcher;
+use network_protocol::transport::tls::TlsServerConfig;
+use tokio::sync::mpsc;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let tls_config = TlsServerConfig::new("server.crt", "server.key")
+        .with_client_auth("ca.crt"); // Require client certificates (mTLS)
+
+    let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>(1);
+
+    // Set up graceful shutdown on Ctrl+C
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            println!("Shutting down TLS server gracefully...");
+            let _ = shutdown_tx.send(()).await;
+        }
+    });
+
+    // Run server until shutdown is signalled
+    tls_daemon::start_with_shutdown("127.0.0.1:8443", tls_config, shutdown_rx).await?;
+    println!("TLS Server has shut down successfully");
+    Ok(())
+}
+```
+
+### TLS Client
+
+`service::tls_client::TlsClient` connects to a TLS server such as the TLS daemon and exchanges `Message`s.
+
+```rust
+impl TlsClient {
+    pub async fn connect(addr: &str, config: TlsClientConfig) -> Result<Self>
+    pub async fn connect_with_session(
+        addr: &str,
+        config: TlsClientConfig,
+        session_cache: Option<Arc<SessionCache>>,
+    ) -> Result<Self>
+    pub async fn send(&mut self, message: Message) -> Result<()>
+    pub async fn receive(&mut self) -> Result<Message>
+    pub async fn request(&mut self, message: Message) -> Result<Message>
+    pub fn session_cache(&self) -> Option<&SessionCache>
+    pub fn session_id(&self) -> Option<&str>
+}
+```
+
+- `connect`: connects without session resumption. The handshake must finish within 10 seconds, otherwise it fails with `ProtocolError::Timeout`.
+- `connect_with_session`: with `Some(cache)`, the server's session tickets are stored in the cache, and a later connection that uses the same cache and server name resumes the TLS session instead of running a full handshake (fixed in 1.3.0; before that nothing was resumed).
+- `send` / `receive`: one message each way. `request` sends a message and waits for the next reply.
+
+**Example:**
+```rust
+use network_protocol::protocol::message::Message;
+use network_protocol::service::tls_client::TlsClient;
+use network_protocol::transport::session_cache::SessionCache;
+use network_protocol::transport::tls::TlsClientConfig;
 use std::sync::Arc;
 use std::time::Duration;
 
 #[tokio::main]
-async fn main() -> network_protocol::error::Result<()> {
-    let dispatcher = Arc::new(EchoDispatcher::new());
-    
-    let tls_config = TlsConfig {
-        cert_path: "server.crt",
-        key_path: "server.key",
-        ca_path: Some("ca.crt"),   // For client cert validation
-        verify_client: true,        // Enable mTLS
-    };
-    
-    // Create TLS server with handle for shutdown
-    let server = tls_daemon::new("127.0.0.1:8443", tls_config, dispatcher);
-    
-    // Set up graceful shutdown on Ctrl+C
-    let server_clone = server.clone();
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.expect("Failed to listen for ctrl+c");
-        println!("Shutting down TLS server gracefully...");
-        server_clone.shutdown(Some(Duration::from_secs(10))).await;
-    });
-    
-    // Run server until shutdown is called
-    server.run().await?;
-    println!("TLS Server has shut down successfully");
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // One cache shared by every connection to this server
+    let cache = Arc::new(SessionCache::new(100, Duration::from_secs(3600)));
+
+    for _ in 0..2 {
+        let config = TlsClientConfig::new("example.com")
+            .with_root_ca("ca.crt")
+            .with_client_certificate("client.crt", "client.key");
+
+        // The second connection resumes the session from the first
+        let mut client =
+            TlsClient::connect_with_session("127.0.0.1:8443", config, Some(cache.clone())).await?;
+        let reply = client.request(Message::Ping).await?;
+        println!("Reply: {:?}", reply);
+    }
     Ok(())
 }
 ```
 
 ### Secure Connection
 
-The secure connection module provides encryption and decryption capabilities for network communications.
+`service::secure::SecureConnection` wraps a framed TCP stream and encrypts every message with XChaCha20-Poly1305 under the session key from the handshake. `Client` and `service::daemon` use it internally; use it directly only when you run the handshake yourself.
 
 #### Struct Definition
 
 ```rust
 pub struct SecureConnection {
-    key: [u8; 32],
-    cipher: XChaCha20Poly1305,
-    compress: bool,
+    // private fields
 }
 ```
 
@@ -1903,68 +1959,78 @@ pub struct SecureConnection {
 
 ##### `new`
 
-Creates a new secure connection with the given key.
+Creates a secure connection over a framed TCP stream with the given session key. The send and receive timeouts both start at 5 seconds. The local copy of the key is zeroized after use.
 
 ```rust
-pub fn new(key: [u8; 32], compress: bool) -> Result<Self>
+pub fn new(framed: Framed<TcpStream, PacketCodec>, key: [u8; 32]) -> Self
 ```
 
 **Parameters:**
-- `key`: The 32-byte encryption key
-- `compress`: Whether to enable compression
+- `framed`: A connected stream (from `transport::remote::connect`) on which the handshake has completed
+- `key`: The 32-byte session key from the handshake
 
-**Returns:**
-- `Result<SecureConnection>`: A result containing either the secure connection or an error
+##### `with_timeouts`
 
-##### `encrypt`
-
-Encrypts a message using the established key.
+Sets the send and receive timeouts.
 
 ```rust
-pub fn encrypt(&self, msg: &Message) -> Result<Vec<u8>>
+pub fn with_timeouts(self, send_timeout: Duration, recv_timeout: Duration) -> Self
 ```
 
-**Parameters:**
-- `msg`: The message to encrypt
+##### `secure_send`
 
-**Returns:**
-- `Result<Vec<u8>>`: A result containing either the encrypted message as bytes or an error
-
-##### `decrypt`
-
-Decrypts a message using the established key.
+Serializes a value with bincode, encrypts it with a fresh random 24-byte nonce and sends it as one packet. The payload is the nonce followed by the ciphertext.
 
 ```rust
-pub fn decrypt(&self, ciphertext: &[u8]) -> Result<Message>
+pub async fn secure_send(&mut self, msg: impl serde::Serialize) -> Result<()>
 ```
 
-**Parameters:**
-- `ciphertext`: The encrypted message bytes to decrypt
+**Errors:**
+- `ProtocolError::Timeout` if the send takes longer than the send timeout
+- Serialization, encryption or transport errors
 
-**Returns:**
-- `Result<Message>`: A result containing either the decrypted message or an error
+##### `secure_recv`
+
+Receives one packet, decrypts it and deserializes it.
+
+```rust
+pub async fn secure_recv<T: serde::de::DeserializeOwned>(&mut self) -> Result<T>
+```
+
+**Errors:**
+- `ProtocolError::Timeout` if nothing arrives within the receive timeout
+- `ProtocolError::ConnectionClosed` if the peer closed the connection
+- `ProtocolError::DecryptionFailure` if the payload is shorter than a nonce or fails authentication
+
+##### `time_since_last_activity`
+
+```rust
+pub fn time_since_last_activity(&self) -> Duration
+```
+
+Time since the last successful send or receive.
 
 **Example:**
 ```rust
-use network_protocol::service::secure::SecureConnection;
 use network_protocol::protocol::message::Message;
-use network_protocol::protocol::handshake;
+use network_protocol::service::secure::SecureConnection;
+use network_protocol::PacketCodec;
+use std::time::Duration;
+use tokio::net::TcpStream;
+use tokio_util::codec::Framed;
 
-// Establish a shared key (in a real scenario, this would be via handshake)
-let client_nonce = 12345678;
-let key = handshake::derive_shared_key(client_nonce);
+// `framed` is the stream the handshake ran on, and `key` is the session key it produced
+// (see the Handshake section). Both sides must use the same key.
+async fn send_secret(
+    framed: Framed<TcpStream, PacketCodec>,
+    key: [u8; 32],
+) -> network_protocol::error::Result<Message> {
+    let mut conn = SecureConnection::new(framed, key)
+        .with_timeouts(Duration::from_secs(3), Duration::from_secs(10));
 
-// Create a secure connection
-let secure_conn = SecureConnection::new(key, true).unwrap();
-
-// Encrypt a message
-let message = Message::Echo("Secret message".to_string());
-let encrypted = secure_conn.encrypt(&message).unwrap();
-
-// Decrypt the message
-let decrypted = secure_conn.decrypt(&encrypted).unwrap();
-if let Message::Echo(text) = decrypted {
-    println!("Decrypted message: {}", text);
+    conn.secure_send(Message::Echo("Secret message".to_string())).await?;
+    let reply: Message = conn.secure_recv().await?;
+    Ok(reply)
 }
 ```
 
@@ -1988,6 +2054,9 @@ let config = PoolConfig {
 let pool = ConnectionPool::new(factory, config)?;
 let conn = pool.acquire().await?;
 ```
+
+- `max_size` is the number of idle connections the pool keeps. A connection released while the pool already holds `max_size` is closed (since 1.3.0; before that up to 100 were kept whatever the setting).
+- `max_lifetime` counts from when the connection was created. Returning a connection to the pool does not reset it (since 1.3.0).
 
 ### Multiplexing
 
@@ -2553,55 +2622,77 @@ async fn send_with_timeout<T: Serialize>(
 
 The logging module provides structured logging capabilities using the `tracing` crate.
 
+### Types
+
+##### `LogConfig`
+
+```rust
+pub struct LogConfig {
+    pub app_name: String,
+    pub log_level: tracing::Level,
+    pub json_format: bool,
+    pub log_dir: Option<String>,
+    pub log_to_stdout: bool,
+}
+```
+
+**Fields:**
+- `app_name`: Application name, used in the log filter and as the log file name (default: "network-protocol")
+- `log_level`: Level applied to `app_name` (default: INFO)
+- `json_format`: Write JSON lines instead of plain text (default: false)
+- `log_dir`: Directory for a daily rolling file named `<app_name>.log`; `None` for no file (default: None)
+- `log_to_stdout`: Also write to stdout (default: true). If there is no `log_dir` and this is `false`, logs still go to stdout and a warning is logged.
+
+This is a different struct from `config::LoggingConfig`. The `[logging]` table of `NetworkConfig` is not read by any of these functions; build a `LogConfig` from it yourself if you want to use it.
+
 ### Functions
 
 ##### `init_logging`
 
-Initializes structured logging with configurable log level.
+Installs a global `tracing` subscriber. Only the first call has any effect; later calls do nothing.
 
 ```rust
-pub fn init_logging(log_level: Option<&str>, log_file: Option<&str>) -> Result<()>
+pub fn init_logging(config: &LogConfig)
 ```
 
-**Parameters:**
-- `log_level`: Optional string representation of the log level ("trace", "debug", "info", "warn", "error")
-- `log_file`: Optional file path to write logs to
+If the `RUST_LOG` environment variable is set, it is used as the filter and `log_level` is not applied.
 
-**Returns:**
-- `Result<()>`: Success or error if logging initialization fails
+##### `setup_default_logging`
+
+```rust
+pub fn setup_default_logging()
+```
+
+Calls `init_logging(&LogConfig::default())`.
+
+##### `network_protocol::init` and `network_protocol::init_with_config`
+
+```rust
+pub fn init()
+pub fn init_with_config(log_config: &utils::logging::LogConfig)
+```
+
+Shortcuts at the crate root: `init()` calls `setup_default_logging()`, and `init_with_config(..)` calls `init_logging(..)`.
 
 **Example:**
 ```rust
-use network_protocol::utils::logging;
-use tracing::{info, debug, error};
+use network_protocol::utils::logging::{init_logging, LogConfig};
+use tracing::{debug, error, info, Level};
 
-fn main() -> Result<()> {
-    // Initialize with INFO level and no log file (stdout only)
-    logging::init_logging(Some("info"), None)?;
-    
+fn main() {
+    // DEBUG level for this app, stdout only
+    init_logging(&LogConfig {
+        app_name: "my-service".to_string(),
+        log_level: Level::DEBUG,
+        ..Default::default()
+    });
+
     // Log various events with different levels
     debug!("This is a debug message with a value: {}", 42);
     info!(user = "admin", action = "login", "User logged in successfully");
     error!(error_code = 500, message = "Database connection failed");
-    
-    Ok(())
 }
 ```
-
-##### `get_subscriber`
-
-Creates a tracing subscriber with the specified configuration.
-
-```rust
-pub fn get_subscriber(log_level: String, sink: impl Sink<String> + Send + Sync + 'static) -> impl Subscriber + Send + Sync
-```
-
-**Parameters:**
-- `log_level`: String representation of the log level
-- `sink`: Where to send the log output
-
-**Returns:**
-- A tracing subscriber configured with the specified settings
 
 ## Configuration
 
@@ -2704,7 +2795,7 @@ use std::time::Duration;
 let config = NetworkConfig::default_with_overrides(|cfg| {
     cfg.server.address = "0.0.0.0:8080".to_string();
     cfg.server.connection_timeout = Duration::from_secs(60);
-    cfg.transport.compression_enabled = true;
+    cfg.client.operation_timeout = Duration::from_secs(5);
 });
 ```
 
@@ -2765,7 +2856,7 @@ pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()>
 
 ### ServerConfig
 
-Server-specific configuration settings.
+Server-specific configuration settings, used by `service::daemon`. The TLS daemon does not take a `ServerConfig`.
 
 ```rust
 pub struct ServerConfig {
@@ -2779,16 +2870,16 @@ pub struct ServerConfig {
 ```
 
 **Fields:**
-- `address`: Server listen address (e.g., "127.0.0.1:9000")
-- `backpressure_limit`: Maximum number of messages in the queue (default: 32)
-- `connection_timeout`: Timeout for client connections
-- `heartbeat_interval`: Interval for sending heartbeat messages
-- `shutdown_timeout`: Timeout for graceful server shutdown
-- `max_connections`: Maximum number of concurrent connections (default: 1000)
+- `address`: Server listen address (default: "127.0.0.1:9000")
+- `backpressure_limit`: Depth of each connection's message queue. When it is full, the server stops reading from that client until the queue drains (default: 32). Before 1.3.0 the queues were fixed at 32 whatever this was set to.
+- `connection_timeout`: How long the server waits for each step of a client's handshake (default: 5s). An established session is not limited by it; it lasts until the client disconnects or the keep-alive finds it dead. In 1.2.x it closed every connection once it was older than this.
+- `heartbeat_interval`: Interval for sending keep-alive pings (default: 15s). A client that sends nothing for 4 times this interval is treated as dead and disconnected.
+- `shutdown_timeout`: How long a graceful shutdown waits for open connections to close (default: 30s)
+- `max_connections`: Maximum number of concurrent connections (default: 1000). Connections accepted over the limit are closed immediately. Before 1.3.0 this was validated but not enforced.
 
 ### ClientConfig
 
-Client-specific configuration settings.
+Client-specific configuration settings, used by `service::client::Client`.
 
 ```rust
 pub struct ClientConfig {
@@ -2797,44 +2888,44 @@ pub struct ClientConfig {
     pub operation_timeout: Duration,
     pub response_timeout: Duration,
     pub heartbeat_interval: Duration,
-    pub auto_reconnect: bool,
-    pub max_reconnect_attempts: u32,
-    pub reconnect_delay: Duration,
+    #[deprecated] pub auto_reconnect: bool,
+    #[deprecated] pub max_reconnect_attempts: u32,
+    #[deprecated] pub reconnect_delay: Duration,
 }
 ```
 
 **Fields:**
-- `address`: Target server address (e.g., "127.0.0.1:9000")
-- `connection_timeout`: Timeout for connection attempts
-- `operation_timeout`: Timeout for individual operations (default: 3s)
-- `response_timeout`: Timeout for waiting for response messages (default: 30s)
-- `heartbeat_interval`: Interval for sending heartbeat messages
-- `auto_reconnect`: Whether to automatically reconnect (default: true)
-- `max_reconnect_attempts`: Maximum reconnect attempts (default: 3)
-- `reconnect_delay`: Delay between reconnect attempts (default: 1s)
+- `address`: Target server address (default: "127.0.0.1:9000")
+- `connection_timeout`: Timeout for the TCP connect and for the server's handshake response (default: 5s)
+- `operation_timeout`: Timeout for each `Client::send` (default: 3s). Before 1.3.0 it was not used. Receives keep their 5 second default.
+- `response_timeout`: How long `Client::send_and_wait` waits for a reply (default: 30s)
+- `heartbeat_interval`: Interval for keep-alive pings while waiting in `recv_with_keepalive` (default: 15s)
+- `auto_reconnect`, `max_reconnect_attempts`, `reconnect_delay`: deprecated in 1.3.0. `Client` has never reconnected, whatever they are set to. Build the struct with `..Default::default()` to avoid deprecation warnings. They can be left out of a `[client]` TOML table.
 
 ### TransportConfig
 
-Transport-specific configuration settings.
+Transport-specific configuration settings. Every field is deprecated in 1.3.0 because nothing reads them.
 
 ```rust
 pub struct TransportConfig {
-    pub compression_enabled: bool,
-    pub encryption_enabled: bool,
-    pub max_payload_size: usize,
-    pub compression_level: i32,
+    #[deprecated] pub compression_enabled: bool,
+    #[deprecated] pub encryption_enabled: bool,
+    #[deprecated] pub max_payload_size: usize,
+    #[deprecated] pub compression_level: i32,
+    #[deprecated] pub compression_threshold_bytes: usize,
 }
 ```
 
 **Fields:**
-- `compression_enabled`: Whether to enable compression (default: false)
-- `encryption_enabled`: Whether to enable encryption (default: true)
-- `max_payload_size`: Maximum allowed payload size (default: 16MB)
-- `compression_level`: Compression level when enabled (default: 6)
+- `compression_enabled`, `compression_level`, `compression_threshold_bytes`: not applied by any transport. Call `utils::compression` directly if you want compression.
+- `encryption_enabled`: not applied. The built-in services always encrypt.
+- `max_payload_size`: not applied. The packet codec always enforces `MAX_PAYLOAD_SIZE` (16 MiB).
+
+All of them can be left out of a `[transport]` TOML table, or the table can be left out entirely.
 
 ### LoggingConfig
 
-Logging-specific configuration settings.
+Logging-specific configuration settings. They are loaded and validated with the rest of `NetworkConfig`, but the library does not read them: `init_logging` takes a `utils::logging::LogConfig` (see [Logging](#logging)).
 
 ```rust
 pub struct LoggingConfig {
@@ -2883,32 +2974,40 @@ mod log_level_serde {
 
 ```rust
 use network_protocol::config::NetworkConfig;
-use network_protocol::service::daemon::Daemon;
+use network_protocol::protocol::dispatcher::Dispatcher;
+use network_protocol::protocol::message::Message;
+use network_protocol::service::daemon;
+use std::sync::Arc;
 
 #[tokio::main]
-async fn main() -> network_protocol::error::Result<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load configuration from file
     let config = NetworkConfig::from_file("config.toml")?;
-    
+
     // Or from environment variables
     // let config = NetworkConfig::from_env()?;
-    
+
+    config.validate_strict()?;
+
+    let dispatcher = Arc::new(Dispatcher::new());
+    dispatcher.register("PING", |_| Ok(Message::Pong))?;
+
     // Start server with configuration
-    let daemon = Daemon::start_with_config(config.server.clone()).await?;
-    
+    let mut server = daemon::start_daemon_no_signals(config.server.clone(), dispatcher).await?;
+
     // Wait for shutdown signal
     tokio::signal::ctrl_c().await?;
-    
+
     // Shut down gracefully
-    daemon.shutdown().await?;
-    
+    server.shutdown().await?;
+
     Ok(())
 }
 ```
 
 ### Example Configuration File
 
-A complete example configuration file (`example_config.toml`) is available in the docs directory, demonstrating all available settings with their default values and comments.
+A complete example configuration file (`example_config.toml`) is available in the docs directory, demonstrating all available settings with their default values and comments. Its `[transport]` table and the reconnect settings in `[client]` are deprecated in 1.3.0 and have no effect.
 
 #### Constants
 
@@ -2919,13 +3018,15 @@ pub const PROTOCOL_VERSION: u8 = 1;
 // Magic bytes for identifying protocol packets ("NPRO")
 pub const MAGIC_BYTES: [u8; 4] = [0x4E, 0x50, 0x52, 0x4F];
 
-// Maximum size of a packet payload in bytes
+// Maximum size of a packet payload in bytes, enforced by the packet codec
 pub const MAX_PAYLOAD_SIZE: usize = 16 * 1024 * 1024; // 16MB
 
-// Default settings
-pub const DEFAULT_COMPRESSION_ENABLED: bool = true;
-pub const DEFAULT_ENCRYPTION_ENABLED: bool = true;
+// Default values for the deprecated TransportConfig fields
+pub const ENABLE_COMPRESSION: bool = false;
+pub const ENABLE_ENCRYPTION: bool = true;
 ```
+
+The codec checks a frame's header as soon as its 9 bytes arrive and rejects a declared payload over `MAX_PAYLOAD_SIZE` with `ProtocolError::OversizedPacket` before buffering it.
 
 
 

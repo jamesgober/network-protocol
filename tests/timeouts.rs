@@ -73,8 +73,15 @@ async fn test_client_timeout_detection() {
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
     let server_addr = addr.clone(); // Clone for server task
+                                    // A short shutdown grace period: once it expires the server closes the client's
+                                    // session, which is what the client must detect.
+    let config = network_protocol::config::ServerConfig {
+        address: server_addr,
+        shutdown_timeout: Duration::from_secs(1),
+        ..Default::default()
+    };
     let server_handle = tokio::spawn(async move {
-        daemon::start_with_shutdown(&server_addr, shutdown_rx)
+        daemon::start_with_config_and_shutdown(config, shutdown_rx)
             .await
             .unwrap();
     });

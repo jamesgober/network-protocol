@@ -29,11 +29,13 @@ use crate::error::{ProtocolError, Result};
 pub struct PoolConfig {
     /// Minimum connections to maintain (pre-warmed)
     pub min_size: usize,
-    /// Maximum connections in pool
+    /// Maximum idle connections kept in the pool. A connection released while the pool
+    /// already holds this many is closed instead of being kept.
     pub max_size: usize,
     /// Time-to-live for idle connections before eviction
     pub idle_timeout: Duration,
-    /// Maximum lifetime of a connection regardless of idle time
+    /// Maximum lifetime of a connection regardless of idle time, measured from when the
+    /// connection was created (reuse does not reset it)
     pub max_lifetime: Duration,
     /// Maximum concurrent waiters for connections (backpressure limit)
     pub max_waiters: usize,
@@ -167,11 +169,16 @@ struct PooledConnection<T> {
 
 impl<T> PooledConnection<T> {
     fn new(connection: T) -> Self {
-        let now = Instant::now();
+        Self::returned(connection, Instant::now())
+    }
+
+    /// A connection coming back to the pool: it keeps its original creation time, so
+    /// `max_lifetime` counts from when it was opened, not from its last release.
+    fn returned(connection: T, created_at: Instant) -> Self {
         Self {
             connection,
-            created_at: now,
-            last_used_at: now,
+            created_at,
+            last_used_at: Instant::now(),
         }
     }
 
@@ -408,6 +415,8 @@ impl<T: Send + 'static> ConnectionPool<T> {
                 debug!("Reused connection from pool (LRU)");
                 return Ok(PooledConnectionGuard {
                     connection: Some(pooled.connection),
+                    created_at: pooled.created_at,
+                    max_idle: self.config.max_size,
                     pool: self.connections.clone(),
                     metrics: self.metrics.clone(),
                 });
@@ -444,6 +453,8 @@ impl<T: Send + 'static> ConnectionPool<T> {
 
                 Ok(PooledConnectionGuard {
                     connection: Some(new_conn),
+                    created_at: Instant::now(),
+                    max_idle: self.config.max_size,
                     pool: self.connections.clone(),
                     metrics: self.metrics.clone(),
                 })
@@ -485,6 +496,10 @@ impl<T: Send + 'static> ConnectionPool<T> {
 /// Returns the connection to the pool on drop.
 pub struct PooledConnectionGuard<T: Send + 'static> {
     connection: Option<T>,
+    /// When the connection was opened, carried back into the pool on release
+    created_at: Instant,
+    /// `PoolConfig::max_size`: idle connections the pool may hold
+    max_idle: usize,
     pool: Arc<Mutex<VecDeque<PooledConnection<T>>>>,
     metrics: Arc<PoolMetrics>,
 }
@@ -525,7 +540,8 @@ impl<T: Send + 'static> Drop for PooledConnectionGuard<T> {
         if let Some(conn) = self.connection.take() {
             let pool = self.pool.clone();
             let metrics = self.metrics.clone();
-            let pooled = PooledConnection::new(conn);
+            let max_idle = self.max_idle;
+            let pooled = PooledConnection::returned(conn, self.created_at);
 
             // Update metrics
             metrics.active_connections.fetch_sub(1, Ordering::Relaxed);
@@ -534,8 +550,7 @@ impl<T: Send + 'static> Drop for PooledConnectionGuard<T> {
             // This spawns a background task to handle the return
             tokio::spawn(async move {
                 let mut connections = pool.lock().await;
-                if connections.len() < 100 {
-                    // Reasonable max to prevent memory issues
+                if connections.len() < max_idle {
                     connections.push_back(pooled);
                     metrics.idle_connections.fetch_add(1, Ordering::Relaxed);
                 } else {
@@ -678,5 +693,76 @@ mod tests {
     async fn test_config_validation_valid_config() {
         let config = PoolConfig::default();
         assert!(config.validate().is_ok());
+    }
+
+    /// Wait for the background tasks that return dropped guards to the pool.
+    async fn settle<T: Send + 'static>(pool: &ConnectionPool<T>, expected: usize) -> usize {
+        for _ in 0..100 {
+            if pool.size().await == expected {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        pool.size().await
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)] // Test code
+    async fn test_released_connections_are_capped_at_max_size() {
+        let factory = Arc::new(TestFactory::new());
+        let pool = ConnectionPool::new(
+            factory.clone(),
+            PoolConfig {
+                min_size: 0,
+                max_size: 2,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let mut guards = Vec::new();
+        for _ in 0..5 {
+            guards.push(pool.acquire().await.unwrap());
+        }
+        assert_eq!(factory.count(), 5);
+        drop(guards);
+
+        // Only max_size of the five are kept; the rest are closed.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(settle(&pool, 2).await, 2);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)] // Test code
+    async fn test_max_lifetime_counts_from_creation_not_last_release() {
+        let factory = Arc::new(TestFactory::new());
+        let pool = ConnectionPool::new(
+            factory.clone(),
+            PoolConfig {
+                min_size: 0,
+                max_size: 4,
+                idle_timeout: Duration::from_millis(100),
+                max_lifetime: Duration::from_millis(250),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // Keep reusing one connection, never idle longer than idle_timeout.
+        drop(pool.acquire().await.unwrap());
+        assert_eq!(settle(&pool, 1).await, 1);
+        for _ in 0..8 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            drop(pool.acquire().await.unwrap());
+            assert_eq!(settle(&pool, 1).await, 1);
+        }
+
+        // 400 ms of use is past the 250 ms lifetime, so the connection was replaced
+        // even though it was reused well within the idle timeout.
+        assert!(
+            factory.count() >= 2,
+            "connection outlived max_lifetime: created {}",
+            factory.count()
+        );
     }
 }

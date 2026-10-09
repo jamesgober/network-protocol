@@ -1,3 +1,7 @@
+// These tests still cover parsing, defaults and validation of the config fields
+// deprecated in 1.3.0.
+#![allow(deprecated)]
+
 use network_protocol::config::{ClientConfig, NetworkConfig, ServerConfig}; //LoggingConfig
 use network_protocol::error::Result;
 use std::env;
@@ -243,5 +247,40 @@ async fn test_config_integration() -> Result<()> {
     daemon.shutdown().await?;
 
     println!("All integration tests passed!");
+    Ok(())
+}
+
+/// The fields deprecated in 1.3.0 have no effect, so a config file can leave them out.
+#[test]
+fn test_deprecated_fields_can_be_omitted() -> Result<()> {
+    let config = NetworkConfig::from_toml(
+        r#"
+    [server]
+    address = "127.0.0.1:9999"
+    backpressure_limit = 64
+    connection_timeout = 15000
+    heartbeat_interval = 5000
+    shutdown_timeout = 5000
+    max_connections = 500
+
+    [client]
+    address = "127.0.0.1:9999"
+    connection_timeout = 5000
+    operation_timeout = 5000
+    response_timeout = 15000
+    heartbeat_interval = 5000
+
+    [transport]
+
+    [logging]
+    app_name = "test"
+    log_level = "info"
+    log_to_console = true
+    log_to_file = false
+    json_format = false
+    "#,
+    )?;
+    assert_eq!(config.client.operation_timeout, Duration::from_millis(5000));
+    assert_eq!(config.server.max_connections, 500);
     Ok(())
 }

@@ -1,7 +1,7 @@
 use bytes::BytesMut;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
 use network_protocol::{config::PROTOCOL_VERSION, core::codec::PacketCodec, core::packet::Packet};
-use tokio_util::codec::Encoder;
+use tokio_util::codec::{Decoder, Encoder};
 
 #[allow(clippy::unwrap_used)]
 fn bench_packet_encode_decode(c: &mut Criterion) {
@@ -46,6 +46,27 @@ fn bench_packet_encode_decode(c: &mut Criterion) {
                 let decoded = Packet::from_bytes(&buf);
                 assert!(decoded.is_ok());
             })
+        });
+        // The framed read path: header checks and frame split in PacketCodec::decode.
+        group.bench_function(format!("codec_decode_{size}b"), |b| {
+            let mut frame = BytesMut::new();
+            PacketCodec
+                .encode(
+                    Packet {
+                        version: PROTOCOL_VERSION,
+                        payload: payload.clone(),
+                    },
+                    &mut frame,
+                )
+                .unwrap();
+            b.iter_batched(
+                || frame.clone(),
+                |mut src| {
+                    let decoded = PacketCodec.decode(&mut src).unwrap();
+                    assert!(decoded.is_some());
+                },
+                BatchSize::SmallInput,
+            )
         });
     }
 

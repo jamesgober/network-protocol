@@ -6,6 +6,7 @@ We release patches for security vulnerabilities for the following versions:
 
 | Version | Supported          |
 | ------- | ------------------ |
+| 1.3.x   | :white_check_mark: |
 | 1.2.x   | :white_check_mark: |
 | 1.1.x   | :white_check_mark: |
 | 1.0.x   | :white_check_mark: |
@@ -112,6 +113,12 @@ Network-protocol implements comprehensive memory zeroization for all cryptograph
   - Replaced unmaintained `rustls-pemfile` with `rustls-pki-types` PEM parsing (RUSTSEC-2025-0134)
 - **v1.2.4**: TLS certificate pinning fix:
   - `with_pinned_cert_hash()` and `insecure()` client verifiers now verify the TLS 1.2 and 1.3 handshake signature, so a server must hold the private key of the pinned certificate (previously a copy of the public certificate was enough)
+- **v1.3.0**: TLS and transport settings that failed open:
+  - `with_pinned_cert_hash()` is enforced without `insecure()` (it was ignored, so any CA-valid certificate was accepted), and a pin that is not 32 bytes is a config error
+  - `require_client_auth(true)` without a client CA is a config error (it was accepted and required no client certificate)
+  - The packet codec rejects a frame header declaring more than `MAX_PAYLOAD_SIZE` before buffering the payload (a peer could make a connection buffer up to 4 GiB)
+  - TLS handshakes time out after `HANDSHAKE_TIMEOUT` on servers and clients
+  - Self-signed private keys from `generate_self_signed()` are written with mode 0600 on Unix
 
 ### Verification
 

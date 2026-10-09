@@ -16,7 +16,7 @@ use crate::protocol::keepalive::KeepAliveManager;
 use crate::service::secure::SecureConnection;
 use crate::transport::remote;
 use crate::utils::replay_cache::ReplayCache;
-use crate::utils::timeout::with_timeout_error;
+use crate::utils::timeout::{with_timeout_error, DEFAULT_TIMEOUT};
 
 /// High-level protocol client with post-handshake encryption
 pub struct Client {
@@ -116,7 +116,9 @@ impl Client {
 
         // Step 4: Derive shared session key
         let key = client_derive_session_key(client_state_verified)?;
-        let conn = SecureConnection::new(framed, key);
+        // `operation_timeout` bounds each send; receives keep the default timeout.
+        let conn = SecureConnection::new(framed, key)
+            .with_timeouts(config.operation_timeout, DEFAULT_TIMEOUT);
 
         // Create keep-alive manager with configured interval
         let dead_timeout = config.heartbeat_interval.mul_f32(4.0); // 4x the heartbeat interval

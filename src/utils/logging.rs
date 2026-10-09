@@ -1,4 +1,4 @@
-use std::sync::Once;
+use std::sync::{Once, OnceLock};
 use tracing::Level;
 use tracing_appender::rolling;
 use tracing_subscriber::{
@@ -8,6 +8,9 @@ use tracing_subscriber::{
 };
 
 static INIT: Once = Once::new();
+
+/// Keeps the non-blocking file writer running for the life of the process.
+static FILE_WRITER_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceLock::new();
 
 /// LogConfig provides options for configuring the logging system
 #[derive(Clone, Debug)]
@@ -68,7 +71,10 @@ pub fn init_logging(config: &LogConfig) {
             // Log to both file and stdout
             (Some(log_dir), true) => {
                 let file_appender = rolling::daily(log_dir, format!("{}.log", config.app_name));
-                let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+                let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+                // The guard owns the background writer. Dropping it here (as before
+                // 1.3.0) shut the writer down, so nothing reached the log file.
+                let _ = FILE_WRITER_GUARD.set(guard);
 
                 if config.json_format {
                     let file_layer = fmt::layer()
@@ -93,7 +99,10 @@ pub fn init_logging(config: &LogConfig) {
             // Log only to file
             (Some(log_dir), false) => {
                 let file_appender = rolling::daily(log_dir, format!("{}.log", config.app_name));
-                let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+                let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+                // The guard owns the background writer. Dropping it here (as before
+                // 1.3.0) shut the writer down, so nothing reached the log file.
+                let _ = FILE_WRITER_GUARD.set(guard);
 
                 if config.json_format {
                     let file_layer = fmt::layer()

@@ -64,6 +64,19 @@ impl SessionEntry {
 ///
 /// Stores session tickets for TLS 1.3 resumption. This enables clients to reconnect
 /// without performing full handshakes, reducing latency by 50-70%.
+///
+/// Pass the same cache (in an `Arc`) to every
+/// [`TlsClient::connect_with_session`](crate::service::tls_client::TlsClient::connect_with_session)
+/// call: the TLS layer stores the server's session tickets in it and offers them on
+/// the next connection to the same server name. Those TLS tickets are kept in a
+/// rustls session store bounded by `max_entries` and expire as the server's ticket
+/// lifetime says; `default_ttl` applies to entries added with [`store`](Self::store).
+///
+/// rustls only resumes a session with the same certificate verifier that checked
+/// the original connection, so the cache also keeps the TLS client configuration
+/// built for each distinct `TlsClientConfig` and reuses it. Certificate, key and CA
+/// files are therefore read on the first connection with a given configuration; call
+/// [`clear`](Self::clear) after replacing those files.
 #[derive(Clone)]
 pub struct SessionCache {
     /// Maximum number of sessions to cache
@@ -72,6 +85,27 @@ pub struct SessionCache {
     default_ttl: Duration,
     /// Inner cache protected by mutex
     inner: Arc<Mutex<SessionCacheInner>>,
+    /// rustls session store and client configs used for TLS resumption. Reset by
+    /// `clear()`.
+    tls: Arc<std::sync::Mutex<TlsResumption>>,
+}
+
+/// TLS resumption state shared by every connection that uses one `SessionCache`.
+struct TlsResumption {
+    store: Arc<rustls::client::ClientSessionMemoryCache>,
+    /// Built client configs, keyed by `TlsClientConfig::resumption_key()`
+    configs: HashMap<String, Arc<rustls::ClientConfig>>,
+}
+
+impl TlsResumption {
+    fn new(max_entries: usize) -> Self {
+        Self {
+            store: Arc::new(rustls::client::ClientSessionMemoryCache::new(
+                max_entries.max(1),
+            )),
+            configs: HashMap::new(),
+        }
+    }
 }
 
 struct SessionCacheInner {
@@ -96,6 +130,7 @@ impl SessionCache {
         Self {
             max_entries,
             default_ttl,
+            tls: Arc::new(std::sync::Mutex::new(TlsResumption::new(max_entries))),
             inner: Arc::new(Mutex::new(SessionCacheInner {
                 sessions: HashMap::with_capacity(max_entries),
                 total_inserts: 0,
@@ -168,10 +203,39 @@ impl SessionCache {
 
     /// Clear all sessions from the cache
     pub async fn clear(&self) {
+        *self
+            .tls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            TlsResumption::new(self.max_entries);
         let mut inner = self.inner.lock().await;
         let count = inner.sessions.len();
         inner.sessions.clear();
         debug!(cleared_count = count, "Session cache cleared");
+    }
+
+    /// The rustls client config for `config`, built on first use and then shared, with
+    /// resumption backed by this cache's session store.
+    pub(crate) fn tls_client_config(
+        &self,
+        config: &crate::transport::tls::TlsClientConfig,
+    ) -> crate::error::Result<Arc<rustls::ClientConfig>> {
+        let key = config.resumption_key();
+        let mut tls = self
+            .tls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(built) = tls.configs.get(&key) {
+            return Ok(built.clone());
+        }
+        let mut built = config.load_client_config()?;
+        built.resumption = rustls::client::Resumption::store(tls.store.clone());
+        let built = Arc::new(built);
+        if tls.configs.len() >= self.max_entries.max(1) {
+            tls.configs.clear();
+        }
+        tls.configs.insert(key, built.clone());
+        Ok(built)
     }
 
     /// Get current cache statistics

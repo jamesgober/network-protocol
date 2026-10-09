@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
+use tokio::task::JoinSet;
 use tokio_rustls::server::TlsStream;
 use tokio_util::codec::Framed;
 use tracing::{debug, error, info, instrument, warn};
@@ -13,19 +14,36 @@ use crate::protocol::dispatcher::Dispatcher;
 use crate::protocol::message::Message;
 // Secure connection not needed since TLS handles encryption
 use crate::error::Result;
+use crate::service::daemon::close_connections;
 use crate::transport::tls::TlsServerConfig;
+use crate::utils::timeout::HANDSHAKE_TIMEOUT;
+
+/// How long shutdown waits for open connections before closing them.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 
 /// Start a secure TLS server and listen for connections
+///
+/// Runs until the process receives Ctrl-C, then shuts down gracefully.
 #[instrument(skip(tls_config))]
 pub async fn start(addr: &str, tls_config: TlsServerConfig) -> Result<()> {
-    // Create shutdown channel
-    let (_, shutdown_rx) = mpsc::channel::<()>(1);
+    let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>(1);
 
-    // Start with internal shutdown channel
+    // Forward Ctrl-C to the shutdown channel. The task owns the only sender, so the
+    // channel stays open (and the server keeps running) until the signal arrives.
+    tokio::spawn(async move {
+        if let Ok(()) = tokio::signal::ctrl_c().await {
+            info!("Received shutdown signal, initiating graceful shutdown");
+            let _ = shutdown_tx.send(()).await;
+        }
+    });
+
     start_with_shutdown(addr, tls_config, shutdown_rx).await
 }
 
 /// Start a secure TLS server with an external shutdown channel
+///
+/// The server shuts down gracefully when a `()` is sent on the channel. Dropping every
+/// sender without sending does not stop the server.
 #[instrument(skip(tls_config, shutdown_rx))]
 pub async fn start_with_shutdown(
     addr: &str,
@@ -49,43 +67,29 @@ pub async fn start_with_shutdown(
     // Track active connections
     let active_connections = Arc::new(Mutex::new(0u32));
 
-    // Spawn ctrl-c handler to forward to the provided shutdown channel
-    tokio::spawn(async move {
-        if let Ok(()) = tokio::signal::ctrl_c().await {
-            info!("Received shutdown signal, initiating graceful shutdown");
-        }
-    });
+    // Once every sender is gone, `recv()` returns `None` immediately; stop polling it
+    // then instead of treating the closed channel as a shutdown request.
+    let mut shutdown_open = true;
+
+    // Connection tasks, so shutdown can wait for them and then close the rest
+    let mut connections = JoinSet::new();
 
     // Server main loop with graceful shutdown
     loop {
         tokio::select! {
             // Check for shutdown signal
-            _ = shutdown_rx.recv() => {
-                info!("Shutting down server. Waiting for connections to close...");
-
-                // Wait for active connections to close (with timeout)
-                let timeout = tokio::time::sleep(Duration::from_secs(10));
-                tokio::pin!(timeout);
-
-                loop {
-                    tokio::select! {
-                        _ = &mut timeout => {
-                            warn!("Shutdown timeout reached, forcing exit");
-                            break;
-                        }
-                        _ = tokio::time::sleep(Duration::from_millis(500)) => {
-                            let connections = *active_connections.lock().await;
-                            debug!(connections, "Waiting for connections to close");
-                            if connections == 0 {
-                                info!("All connections closed, shutting down");
-                                break;
-                            }
-                        }
-                    }
+            signal = shutdown_rx.recv(), if shutdown_open => {
+                if signal.is_none() {
+                    shutdown_open = false;
+                    continue;
                 }
-
+                info!(connections = connections.len(), "Shutting down server. Waiting for connections to close...");
+                close_connections(&mut connections, SHUTDOWN_GRACE).await;
                 return Ok(());
             }
+
+            // Reap finished connection tasks
+            Some(_) = connections.join_next(), if !connections.is_empty() => {}
 
             // Accept new connections
             accept_result = listener.accept() => {
@@ -102,16 +106,24 @@ pub async fn start_with_shutdown(
                             *count += 1;
                         }
 
-                        tokio::spawn(async move {
-                            match acceptor.accept(stream).await {
-                                Ok(tls_stream) => {
+                        connections.spawn(async move {
+                            // Bound the handshake so a client that stalls cannot hold a
+                            // connection slot open indefinitely.
+                            let handshake = tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await;
+                            match handshake {
+                                Ok(Ok(tls_stream)) => {
                                     if let Err(e) = handle_tls_connection(tls_stream, dispatcher, peer, active_connections).await {
                                         error!(%peer, error=%e, "Connection error");
                                     }
                                 },
-                                Err(e) => {
+                                Ok(Err(e)) => {
                                     error!(%peer, error=%e, "TLS handshake failed");
                                     // Decrement connections on handshake failure
+                                    let mut count = active_connections.lock().await;
+                                    *count -= 1;
+                                }
+                                Err(_) => {
+                                    warn!(%peer, "TLS handshake timed out");
                                     let mut count = active_connections.lock().await;
                                     *count -= 1;
                                 }

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::task::JoinSet;
 use tokio::time;
 use tokio_util::codec::Framed;
 use tracing::{debug, error, info, instrument, warn};
@@ -60,14 +61,28 @@ pub async fn start_with_config_and_shutdown(
     config: ServerConfig,
     shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<()> {
+    // Shared dispatcher with the default PING and ECHO handlers
+    let dispatcher = Arc::new(Dispatcher::new());
+    register_default_handlers(&dispatcher)?;
+
+    run_server(config, dispatcher, shutdown_rx, true).await
+}
+
+/// The server loop shared by every `start_*` entry point.
+///
+/// Applies `config.max_connections` (connections over the limit are closed as soon
+/// as they are accepted), `config.backpressure_limit` (per-connection message queue
+/// depth), `config.connection_timeout` (each handshake step), `config.heartbeat_interval`
+/// and `config.shutdown_timeout`. With `handle_ctrl_c`, Ctrl-C also starts a graceful
+/// shutdown.
+async fn run_server(
+    config: ServerConfig,
+    dispatcher: Arc<Dispatcher>,
+    shutdown_rx: oneshot::Receiver<()>,
+    handle_ctrl_c: bool,
+) -> Result<()> {
     let listener = TcpListener::bind(&config.address).await?;
     info!(address = %config.address, "Server listening");
-
-    // Shared dispatcher
-    let dispatcher = Arc::new(Dispatcher::new());
-
-    // Register default handlers
-    register_default_handlers(&dispatcher)?;
 
     // Track active connections for graceful shutdown
     let active_connections = Arc::new(Mutex::new(0u32));
@@ -79,19 +94,20 @@ pub async fn start_with_config_and_shutdown(
     let shutdown_timeout = config.shutdown_timeout;
     let heartbeat_interval = config.heartbeat_interval;
 
-    // Clone a sender for the task
-    let shutdown_tx_clone = internal_shutdown_tx.clone();
-    tokio::spawn(async move {
-        match tokio::signal::ctrl_c().await {
-            Ok(()) => {
-                info!("Shutdown signal received");
-                let _ = shutdown_tx_clone.send(()).await;
+    if handle_ctrl_c {
+        let shutdown_tx_clone = internal_shutdown_tx.clone();
+        tokio::spawn(async move {
+            match tokio::signal::ctrl_c().await {
+                Ok(()) => {
+                    info!("Shutdown signal received");
+                    let _ = shutdown_tx_clone.send(()).await;
+                }
+                Err(err) => {
+                    error!(error = %err, "Failed to listen for shutdown signal");
+                }
             }
-            Err(err) => {
-                error!(error = %err, "Failed to listen for shutdown signal");
-            }
-        }
-    });
+        });
+    }
 
     // Also set up the oneshot receiver to trigger shutdown
     let internal_shutdown_tx_clone = internal_shutdown_tx.clone();
@@ -102,58 +118,46 @@ pub async fn start_with_config_and_shutdown(
         }
     });
 
+    // Connection tasks, so shutdown can wait for them and then close the rest
+    let mut connections = JoinSet::new();
+
     // Server main loop with graceful shutdown
     loop {
         tokio::select! {
             // Check for shutdown signal
             _ = internal_shutdown_rx.recv() => {
-                info!("Shutting down server. Waiting for connections to close...");
-
-                // Wait for active connections to close (with configured timeout)
-                let timeout = tokio::time::sleep(shutdown_timeout);
-                tokio::pin!(timeout);
-
-                loop {
-                    tokio::select! {
-                        _ = &mut timeout => {
-                            warn!("Shutdown timeout reached, forcing exit");
-                            break;
-                        }
-                        _ = tokio::time::sleep(Duration::from_millis(500)) => {
-                            let connections = *active_connections.lock().await;
-                            info!(connections = %connections, "Waiting for connections to close");
-                            if connections == 0 {
-                                info!("All connections closed, shutting down");
-                                break;
-                            }
-                        }
-                    }
-                }
-
+                info!(connections = connections.len(), "Shutting down server. Waiting for connections to close...");
+                close_connections(&mut connections, shutdown_timeout).await;
                 return Ok(());
             }
+
+            // Reap finished connection tasks
+            Some(_) = connections.join_next(), if !connections.is_empty() => {}
 
             // Accept new connections
             accept_result = listener.accept() => {
                 match accept_result {
                     Ok((stream, peer)) => {
+                        // Enforce the connection limit before doing any work for the peer
+                        {
+                            let mut count = active_connections.lock().await;
+                            if *count as usize >= config.max_connections {
+                                warn!(peer = %peer, limit = config.max_connections, "Connection limit reached, closing new connection");
+                                drop(stream);
+                                continue;
+                            }
+                            *count += 1;
+                        }
+
                         info!(peer = %peer, "New connection established");
                         let dispatcher = dispatcher.clone();
                         let active_connections = active_connections.clone();
-                        // We don't need this clone if we're not using it in this scope
-                        // let _shutdown_tx = shutdown_tx.clone();
-
-                        // Increment active connections counter
-                        {
-                            let mut count = active_connections.lock().await;
-                            *count += 1;
-                        }
 
                         // Clone the things we need to move into the task
                         let active_connections_clone = active_connections.clone();
                         let config_clone = config.clone();
 
-                        tokio::spawn(async move {
+                        connections.spawn(async move {
                             handle_connection(stream, peer, dispatcher, active_connections_clone, config_clone, heartbeat_interval).await;
                         });
                     }
@@ -163,6 +167,25 @@ pub async fn start_with_config_and_shutdown(
                 }
             }
         }
+    }
+}
+
+/// Wait up to `grace` for the connection tasks to finish, then close the ones still
+/// open. Returning from the server without this would leave every open session
+/// running after "shutdown".
+pub(crate) async fn close_connections(connections: &mut JoinSet<()>, grace: Duration) {
+    let drained = time::timeout(grace, async {
+        while connections.join_next().await.is_some() {}
+    })
+    .await;
+    if drained.is_ok() {
+        info!("All connections closed, shutting down");
+    } else {
+        warn!(
+            remaining = connections.len(),
+            "Shutdown timeout reached, closing remaining connections"
+        );
+        connections.shutdown().await;
     }
 }
 
@@ -176,14 +199,10 @@ async fn handle_connection(
     config: ServerConfig,
     heartbeat_interval: Duration,
 ) {
-    // Setup the connection with cleanup
-    let result = with_timeout_error(
-        async {
-            process_connection(stream, dispatcher, peer, config.clone(), heartbeat_interval).await
-        },
-        config.connection_timeout,
-    )
-    .await;
+    // `connection_timeout` bounds each handshake step inside `process_connection`.
+    // An established session lives until the peer disconnects or the keep-alive
+    // detects it is dead; it is not cut off after `connection_timeout`.
+    let result = process_connection(stream, dispatcher, peer, config, heartbeat_interval).await;
 
     // If there was an error, log it
     match result {
@@ -294,7 +313,14 @@ async fn process_connection(
     let conn = SecureConnection::new(framed, session_key);
 
     // Handle the secure message loop
-    handle_secure_connection(conn, dispatcher, peer, heartbeat_interval).await?;
+    handle_secure_connection(
+        conn,
+        dispatcher,
+        peer,
+        heartbeat_interval,
+        config.backpressure_limit,
+    )
+    .await?;
 
     Ok(())
 }
@@ -342,12 +368,13 @@ struct ProcessingResult {
 }
 
 /// Handle a secure connection after handshake with backpressure
-#[instrument(skip(conn, dispatcher, heartbeat_interval), fields(peer = %peer))]
+#[instrument(skip(conn, dispatcher, heartbeat_interval, backpressure_limit), fields(peer = %peer))]
 async fn handle_secure_connection(
     mut conn: SecureConnection,
     dispatcher: Arc<Dispatcher>,
     peer: std::net::SocketAddr,
     heartbeat_interval: Duration,
+    backpressure_limit: usize,
 ) -> Result<()> {
     // --- Initialize Keep-Alive Manager with configured interval ---
     let dead_timeout = heartbeat_interval.mul_f32(4.0); // 4x the heartbeat interval for dead connection detection
@@ -355,9 +382,11 @@ async fn handle_secure_connection(
     let mut ping_interval = time::interval(keep_alive.ping_interval());
 
     // --- Create bounded channels for backpressure with capacity from config ---
-    // We're using an internal messaging channel, so we can use a reasonable default here
-    let (msg_tx, msg_rx) = mpsc::channel::<ProcessingMessage>(32);
-    let (resp_tx, mut resp_rx) = mpsc::channel::<ProcessingResult>(32);
+    // `ServerConfig::validate()` rejects 0; clamp anyway, since a zero-capacity tokio
+    // channel panics.
+    let capacity = backpressure_limit.max(1);
+    let (msg_tx, msg_rx) = mpsc::channel::<ProcessingMessage>(capacity);
+    let (resp_tx, mut resp_rx) = mpsc::channel::<ProcessingResult>(capacity);
 
     // --- Spawn message processing task ---
     let dispatcher_clone = dispatcher.clone();
@@ -546,6 +575,13 @@ impl Daemon {
     }
 
     /// Run the daemon until completion or shutdown signal
+    ///
+    /// This does nothing and returns immediately: the server is already running once
+    /// [`start_daemon_no_signals`] has returned the handle.
+    #[deprecated(
+        since = "1.3.0",
+        note = "does nothing: the server started by start_daemon_no_signals() is already running"
+    )]
     pub async fn run(self) -> Result<()> {
         // This function doesn't actually do anything - the server is started in the start_* functions
         // This is just a placeholder for API compatibility
@@ -563,6 +599,14 @@ impl Daemon {
     }
 
     /// Shutdown the daemon with a custom timeout
+    ///
+    /// The timeout argument is not used: the server waits for open connections for
+    /// `ServerConfig::shutdown_timeout`, fixed when it was started. This is the same
+    /// as [`shutdown`](Self::shutdown).
+    #[deprecated(
+        since = "1.3.0",
+        note = "the timeout argument is ignored; set ServerConfig::shutdown_timeout and call shutdown()"
+    )]
     pub async fn shutdown_with_timeout(&mut self, _timeout: Duration) -> Result<()> {
         // The timeout is handled internally in the server loop
         self.shutdown().await
@@ -570,10 +614,15 @@ impl Daemon {
 }
 
 /// Start a server daemon with provided configuration and return a handle to it
-#[instrument(skip(config, _dispatcher), fields(address = %config.address))]
+///
+/// The server dispatches messages with `dispatcher`, as given: register every
+/// handler you need (including `PING` and `ECHO` if clients use them) before calling.
+/// It installs no signal handler: it stops when [`Daemon::shutdown`] is called (or
+/// the handle is dropped without it, in which case it runs until the runtime ends).
+#[instrument(skip(config, dispatcher), fields(address = %config.address))]
 pub async fn start_daemon_no_signals(
     config: ServerConfig,
-    _dispatcher: Arc<Dispatcher>,
+    dispatcher: Arc<Dispatcher>,
 ) -> Result<Daemon> {
     // Create a shutdown channel
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -582,7 +631,7 @@ pub async fn start_daemon_no_signals(
 
     // Start the server in a background task
     tokio::spawn(async move {
-        if let Err(e) = start_with_config_and_shutdown(config, shutdown_rx).await {
+        if let Err(e) = run_server(config, dispatcher, shutdown_rx, false).await {
             error!(error = ?e, "Server error");
         }
     });
@@ -592,6 +641,13 @@ pub async fn start_daemon_no_signals(
 }
 
 /// Create a new server daemon with configuration and dispatcher
+///
+/// This does not start a server: it returns a handle whose `shutdown()` has nothing to
+/// stop, and the dispatcher is not used. Call [`start_daemon_no_signals`] instead.
+#[deprecated(
+    since = "1.3.0",
+    note = "starts nothing and ignores the dispatcher; use start_daemon_no_signals()"
+)]
 pub fn new_with_config(config: ServerConfig, _dispatcher: Arc<Dispatcher>) -> Daemon {
     let (shutdown_tx, _) = oneshot::channel::<()>();
     Daemon::new(config.address.clone(), shutdown_tx)

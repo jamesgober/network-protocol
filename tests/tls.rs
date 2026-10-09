@@ -771,3 +771,307 @@ fn test_tls_version_and_cipher_suite_config_errors() -> TestResult<()> {
         .is_ok());
     Ok(())
 }
+
+// Settings that would otherwise be accepted and ignored now fail closed.
+
+#[test]
+#[allow(clippy::panic)]
+fn test_required_client_auth_without_ca_is_a_config_error() -> TestResult<()> {
+    let dir = generate_mtls_pki("auth-no-ca")?;
+    let server = || TlsServerConfig::new(dir.join("server.pem"), dir.join("server.key"));
+    let required = server().require_client_auth(true).load_server_config();
+    let optional = server().require_client_auth(false).load_server_config();
+    let with_ca = mtls_server_config(&dir)
+        .require_client_auth(true)
+        .load_server_config();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let message = match required {
+        Err(network_protocol::error::ProtocolError::TlsError(message)) => message,
+        other => panic!("expected a TlsError, got: {:?}", other.map(|_| ())),
+    };
+    assert!(
+        message.contains("client authentication is required but no client CA is configured"),
+        "{message}"
+    );
+    assert!(message.contains("with_client_auth("), "{message}");
+    assert!(optional.is_ok(), "no client auth was requested");
+    assert!(with_ca.is_ok(), "required client auth with a CA is valid");
+    Ok(())
+}
+
+#[test]
+fn test_pinned_hash_must_be_32_bytes() -> TestResult<()> {
+    for len in [0usize, 1, 31, 33, 64] {
+        let err = TlsClientConfig::new("localhost")
+            .insecure()
+            .with_pinned_cert_hash(vec![0xAB; len])
+            .load_client_config()
+            .err();
+        let message = format!("{err:?}");
+        assert!(
+            message.contains("must be 32 bytes") && message.contains(&format!("got {len} bytes")),
+            "length {len}: {message}"
+        );
+        assert!(message.contains("calculate_cert_hash"), "{message}");
+    }
+    // The same check applies without insecure(): a bad pin never silently matches nothing.
+    assert!(TlsClientConfig::new("localhost")
+        .with_pinned_cert_hash(vec![0; 31])
+        .load_client_config()
+        .is_err());
+    assert!(TlsClientConfig::new("localhost")
+        .insecure()
+        .with_pinned_cert_hash(vec![0; 32])
+        .load_client_config()
+        .is_ok());
+    Ok(())
+}
+
+#[test]
+fn test_root_ca_with_insecure_is_a_config_error() -> TestResult<()> {
+    let dir = generate_mtls_pki("root-ca-insecure")?;
+    let result = TlsClientConfig::new("localhost")
+        .insecure()
+        .with_root_ca(dir.join("ca.pem").to_string_lossy())
+        .load_client_config();
+    let missing = TlsClientConfig::new("localhost")
+        .with_root_ca(dir.join("missing.pem").to_string_lossy())
+        .load_client_config();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let message = format!("{:?}", result.err());
+    assert!(
+        message.contains("with_root_ca() has no effect with insecure()"),
+        "{message}"
+    );
+    assert!(missing.is_err(), "a missing root CA file must be an error");
+    Ok(())
+}
+
+fn ca_client(dir: &std::path::Path, server_name: &str) -> TlsClientConfig {
+    TlsClientConfig::new(server_name).with_root_ca(dir.join("ca.pem").to_string_lossy())
+}
+
+fn cert_hash(path: std::path::PathBuf) -> TestResult<Vec<u8>> {
+    use rustls::pki_types::pem::PemObject;
+    let cert = rustls::pki_types::CertificateDer::from_pem_file(path)?;
+    Ok(TlsServerConfig::calculate_cert_hash(&cert))
+}
+
+#[tokio::test]
+async fn test_root_ca_validates_server_certificate() -> TestResult<()> {
+    let dir = generate_mtls_pki("root-ca")?;
+    let server = || TlsServerConfig::new(dir.join("server.pem"), dir.join("server.key"));
+    let trusted = mtls_exchange(server(), ca_client(&dir, "localhost")).await;
+    // Same CA, wrong host name: hostname validation still applies.
+    let wrong_name = mtls_exchange(server(), ca_client(&dir, "example.com")).await;
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let (server_side, client_side) = trusted?;
+    assert!(server_side.is_ok(), "server side failed: {server_side:?}");
+    assert!(client_side.is_ok(), "client side failed: {client_side:?}");
+    let (_, client_side) = wrong_name?;
+    assert!(
+        client_side.is_err(),
+        "certificate for localhost accepted for example.com"
+    );
+    Ok(())
+}
+
+/// Before 1.3.0 a pin without `insecure()` was dropped, so any CA-valid certificate
+/// for the host was accepted.
+#[tokio::test]
+async fn test_pin_is_enforced_with_ca_validation() -> TestResult<()> {
+    let dir = generate_mtls_pki("pin-secure")?;
+    let server = || TlsServerConfig::new(dir.join("server.pem"), dir.join("server.key"));
+    let outcome = async {
+        let right_pin =
+            ca_client(&dir, "localhost").with_pinned_cert_hash(cert_hash(dir.join("server.pem"))?);
+        // A valid pin of some other certificate.
+        let wrong_pin =
+            ca_client(&dir, "localhost").with_pinned_cert_hash(cert_hash(dir.join("client.pem"))?);
+        // The right pin does not excuse a host name the certificate does not cover.
+        let right_pin_wrong_name = ca_client(&dir, "example.com")
+            .with_pinned_cert_hash(cert_hash(dir.join("server.pem"))?);
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((
+            mtls_exchange(server(), right_pin).await?,
+            mtls_exchange(server(), wrong_pin).await?,
+            mtls_exchange(server(), right_pin_wrong_name).await?,
+        ))
+    }
+    .await;
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let (right, wrong, wrong_name) = outcome?;
+    assert!(right.1.is_ok(), "matching pin rejected: {:?}", right.1);
+    assert!(
+        format!("{:?}", wrong.1).contains("Pinned certificate hash mismatch"),
+        "mismatched pin accepted: {:?}",
+        wrong.1
+    );
+    assert!(
+        wrong.0.is_err(),
+        "server completed a handshake the pin forbids"
+    );
+    assert!(
+        wrong_name.1.is_err(),
+        "pinned certificate accepted for the wrong host name"
+    );
+    Ok(())
+}
+
+/// Runs a TLS echo server that records how each handshake went, for `count`
+/// connections.
+async fn handshake_kind_server(
+    server_config: rustls::ServerConfig,
+    count: usize,
+) -> TestResult<(
+    std::net::SocketAddr,
+    tokio::task::JoinHandle<std::io::Result<Vec<Option<rustls::HandshakeKind>>>>,
+)> {
+    use futures::{SinkExt, StreamExt};
+    use network_protocol::core::codec::PacketCodec;
+
+    let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(server_config));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let handle = tokio::spawn(async move {
+        let mut kinds = Vec::new();
+        for _ in 0..count {
+            let (stream, _) = listener.accept().await?;
+            let tls = acceptor.accept(stream).await?;
+            kinds.push(tls.get_ref().1.handshake_kind());
+            let mut framed = tokio_util::codec::Framed::new(tls, PacketCodec);
+            if let Some(Ok(packet)) = framed.next().await {
+                framed
+                    .send(packet)
+                    .await
+                    .map_err(|e| std::io::Error::other(e.to_string()))?;
+            }
+        }
+        Ok(kinds)
+    });
+    Ok((addr, handle))
+}
+
+#[tokio::test]
+async fn test_session_cache_resumes_tls_sessions() -> TestResult<()> {
+    use network_protocol::transport::session_cache::SessionCache;
+    use std::sync::Arc;
+
+    let dir = generate_mtls_pki("resume")?;
+    let outcome = async {
+        let server_config = TlsServerConfig::new(dir.join("server.pem"), dir.join("server.key"))
+            .load_server_config()?;
+
+        // With a shared cache, the second connection resumes.
+        let (addr, server) = handshake_kind_server(server_config.clone(), 2).await?;
+        let cache = Arc::new(SessionCache::new(16, Duration::from_secs(60)));
+        for _ in 0..2 {
+            let mut client = TlsClient::connect_with_session(
+                &addr.to_string(),
+                ca_client(&dir, "localhost"),
+                Some(cache.clone()),
+            )
+            .await?;
+            let _ = client.request(Message::Ping).await?;
+        }
+        let with_cache = server.await??;
+
+        // Without one, every connection is a full handshake.
+        let (addr, server) = handshake_kind_server(server_config, 2).await?;
+        for _ in 0..2 {
+            let mut client =
+                TlsClient::connect(&addr.to_string(), ca_client(&dir, "localhost")).await?;
+            let _ = client.request(Message::Ping).await?;
+        }
+        let without_cache = server.await??;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((with_cache, without_cache))
+    }
+    .await;
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let (with_cache, without_cache) = outcome?;
+    assert_eq!(
+        with_cache,
+        vec![
+            Some(rustls::HandshakeKind::Full),
+            Some(rustls::HandshakeKind::Resumed)
+        ]
+    );
+    assert_eq!(
+        without_cache,
+        vec![
+            Some(rustls::HandshakeKind::Full),
+            Some(rustls::HandshakeKind::Full)
+        ]
+    );
+    Ok(())
+}
+
+/// `tls_daemon::start` used to drop its own shutdown sender, so the server stopped
+/// about half a second after it started.
+#[tokio::test]
+async fn test_tls_daemon_start_keeps_serving() -> TestResult<()> {
+    use network_protocol::service::tls_daemon;
+
+    let dir = generate_mtls_pki("daemon-start")?;
+    let addr = {
+        let probe = std::net::TcpListener::bind("127.0.0.1:0")?;
+        probe.local_addr()?.to_string()
+    };
+    let server = TlsServerConfig::new(dir.join("server.pem"), dir.join("server.key"));
+    let server_addr = addr.clone();
+    let daemon = tokio::spawn(async move { tls_daemon::start(&server_addr, server).await });
+
+    // Well past the point where the old server had already returned.
+    sleep(Duration::from_millis(1500)).await;
+    let finished_early = daemon.is_finished();
+    let reply = async {
+        let mut client = TlsClient::connect(&addr, ca_client(&dir, "localhost")).await?;
+        client.request(Message::Ping).await
+    }
+    .await;
+    daemon.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(!finished_early, "tls_daemon::start returned on its own");
+    assert!(matches!(reply, Ok(Message::Pong)), "got: {reply:?}");
+    Ok(())
+}
+
+/// A client that connects and never sends a ClientHello is dropped after the
+/// handshake timeout instead of holding the connection forever.
+#[tokio::test]
+#[allow(clippy::panic)]
+async fn test_tls_daemon_drops_stalled_handshake() -> TestResult<()> {
+    use network_protocol::service::tls_daemon;
+    use tokio::io::AsyncReadExt;
+
+    let dir = generate_mtls_pki("daemon-stall")?;
+    let addr = {
+        let probe = std::net::TcpListener::bind("127.0.0.1:0")?;
+        probe.local_addr()?.to_string()
+    };
+    let server = TlsServerConfig::new(dir.join("server.pem"), dir.join("server.key"));
+    let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
+    let server_addr = addr.clone();
+    let daemon = tokio::spawn(async move {
+        tls_daemon::start_with_shutdown(&server_addr, server, shutdown_rx).await
+    });
+    sleep(Duration::from_millis(300)).await;
+
+    let mut stalled = tokio::net::TcpStream::connect(&addr).await?;
+    let mut buf = [0u8; 1];
+    let closed = tokio::time::timeout(Duration::from_secs(20), stalled.read(&mut buf)).await;
+    let _ = shutdown_tx.send(()).await;
+    let _ = tokio::time::timeout(Duration::from_secs(15), daemon).await;
+    let _ = std::fs::remove_dir_all(&dir);
+
+    match closed {
+        Ok(Ok(0)) | Ok(Err(_)) => Ok(()),
+        Ok(Ok(n)) => panic!("server sent {n} bytes to a client that never said hello"),
+        Err(_) => panic!("stalled handshake was still open after 20 s"),
+    }
+}

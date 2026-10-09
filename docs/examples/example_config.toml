@@ -1,37 +1,44 @@
 # Example configuration file for network-protocol
 
-# Server-specific configuration
+# Server-specific configuration (used by service::daemon)
 [server]
 address = "127.0.0.1:9000"
-backpressure_limit = 32
-connection_timeout = 5000    # milliseconds
+backpressure_limit = 32      # messages queued per connection before reads pause
+connection_timeout = 5000    # milliseconds, for each handshake step
 heartbeat_interval = 15000   # milliseconds
 shutdown_timeout = 10000     # milliseconds
-max_connections = 1000
+max_connections = 1000       # connections over this are closed on accept
 
-# Client-specific configuration
+# Client-specific configuration (used by service::client::Client)
 [client]
 address = "127.0.0.1:9000"
 connection_timeout = 5000    # milliseconds
-operation_timeout = 3000     # milliseconds
+operation_timeout = 3000     # milliseconds, for each send
 response_timeout = 30000     # milliseconds
 heartbeat_interval = 15000   # milliseconds
+# Deprecated in 1.3.0: Client never reconnects, so these have no effect.
+# They are optional and can be removed.
 auto_reconnect = true
 max_reconnect_attempts = 3
 reconnect_delay = 1000       # milliseconds
 
 # Transport configuration
+# Deprecated in 1.3.0: nothing reads these fields. The packet codec always
+# enforces a 16 MiB payload limit and the built-in services always encrypt.
+# The whole table is optional and can be removed.
 [transport]
 compression_enabled = false
 encryption_enabled = true
 max_payload_size = 16777216  # 16 MB in bytes
-compression_level = 6        # Medium compression (range 1-9)
+compression_level = 6
 
 # Logging configuration
+# Loaded and validated with the rest of the file, but not read by the
+# library's logging setup, which takes a utils::logging::LogConfig.
 [logging]
 app_name = "network-protocol"
 log_level = "info"           # options: trace, debug, info, warn, error
 log_to_console = true
 log_to_file = false
-log_file_path = ""           # leave empty for default log location
+log_file_path = ""           # optional; may be removed
 json_format = false

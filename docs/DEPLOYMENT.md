@@ -49,33 +49,48 @@ The library supports three primary deployment patterns:
 ### Architecture
 
 ```rust
-use network_protocol::{service::daemon, transport::tls, config::Config};
-use std::sync::Arc;
+use network_protocol::service::tls_daemon;
+use network_protocol::transport::tls::TlsServerConfig;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
     network_protocol::init();
-    
+
     // Configure TLS
-    let tls_config = tls::ServerConfig::builder()
-        .with_cert_and_key("cert.pem", "key.pem")
-        .build()?;
-    
-    // Configure server
-    let config = Config {
-        bind_addr: "0.0.0.0:8443".parse()?,
-        max_connections: 1000,
-        tls: Some(Arc::new(tls_config)),
-        ..Default::default()
-    };
-    
-    // Start server
-    daemon::start_with_config(config).await?;
-    
+    let tls_config = TlsServerConfig::new("cert.pem", "key.pem");
+
+    // Start server; runs until Ctrl+C (SIGINT)
+    tls_daemon::start("0.0.0.0:8443", tls_config).await?;
+
     Ok(())
 }
 ```
+
+The TLS daemon does not take a `ServerConfig`, so settings such as `max_connections` and `backpressure_limit` do not apply to it. They apply to `service::daemon`, which secures connections with the crate's own ECDH handshake instead of TLS:
+
+```rust
+use network_protocol::config::ServerConfig;
+use network_protocol::service::daemon;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    network_protocol::init();
+
+    let config = ServerConfig {
+        address: "0.0.0.0:9000".to_string(),
+        max_connections: 1000, // Connections over the limit are closed on accept
+        ..Default::default()
+    };
+
+    // Serves PING and ECHO until Ctrl+C (SIGINT)
+    daemon::start_with_config(config).await?;
+
+    Ok(())
+}
+```
+
+Both servers shut down gracefully on SIGINT only. systemd and `docker stop` send SIGTERM by default, so set `KillSignal=SIGINT` in the unit (or `STOPSIGNAL SIGINT` in the Dockerfile), or handle SIGTERM in your binary and call `Daemon::shutdown()` or the `start_with_shutdown` channel yourself. A server started with `daemon::start_daemon_no_signals()` installs no signal handler at all and stops only on `Daemon::shutdown()`.
 
 ### Deployment Checklist
 
@@ -104,6 +119,8 @@ ExecStart=/opt/network-protocol/bin/server
 Restart=always
 RestartSec=10
 LimitNOFILE=65536
+# The built-in servers shut down gracefully on SIGINT
+KillSignal=SIGINT
 
 # Security hardening
 NoNewPrivileges=true
@@ -218,41 +235,62 @@ backend network_protocol_backend
 
 ### Health Checks
 
-Implement health check endpoints:
+The library has no HTTP endpoints of its own. Implement health check endpoints next to the protocol server, here with axum 0.7 (`axum = "0.7"`):
 
 ```rust
-use axum::{routing::get, Router};
+use axum::{extract::State, http::StatusCode, routing::get, Router};
+use network_protocol::config::ServerConfig;
+use network_protocol::protocol::dispatcher::Dispatcher;
+use network_protocol::protocol::message::Message;
+use network_protocol::service::daemon;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 async fn health_check() -> &'static str {
     "OK"
 }
 
-async fn readiness_check() -> &'static str {
+async fn readiness_check(State(ready): State<Arc<AtomicBool>>) -> (StatusCode, &'static str) {
     // Check if server is ready to accept connections
-    if is_ready() {
-        "READY"
+    if ready.load(Ordering::Relaxed) {
+        (StatusCode::OK, "READY")
     } else {
-        "NOT_READY"
+        (StatusCode::SERVICE_UNAVAILABLE, "NOT_READY")
     }
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let ready = Arc::new(AtomicBool::new(false));
+
     let health_router = Router::new()
         .route("/health", get(health_check))
-        .route("/ready", get(readiness_check));
-    
+        .route("/ready", get(readiness_check))
+        .with_state(ready.clone());
+
     // Run health check server on separate port
-    tokio::spawn(async {
-        axum::Server::bind(&"0.0.0.0:8080".parse().unwrap())
-            .serve(health_router.into_make_service())
-            .await
-    });
-    
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
+    tokio::spawn(async move { axum::serve(listener, health_router).await });
+
     // Start main protocol server
-    network_protocol::service::daemon::start("0.0.0.0:8443").await.unwrap();
+    let dispatcher = Arc::new(Dispatcher::new());
+    dispatcher.register("PING", |_| Ok(Message::Pong))?;
+    let config = ServerConfig {
+        address: "0.0.0.0:8443".to_string(),
+        ..Default::default()
+    };
+    let mut server = daemon::start_daemon_no_signals(config, dispatcher).await?;
+    ready.store(true, Ordering::Relaxed);
+
+    // Report not ready while shutting down
+    tokio::signal::ctrl_c().await?;
+    ready.store(false, Ordering::Relaxed);
+    server.shutdown().await?;
+    Ok(())
 }
 ```
+
+`start_daemon_no_signals()` returns once the server task is spawned, before the listener is bound, and a bind failure is only logged by that task. For a stricter readiness check, also try a TCP connect to the protocol port.
 
 ### Kubernetes Deployment
 
@@ -340,55 +378,52 @@ spec:
 
 ### Edge Node Configuration
 
+There is no edge-specific config type. An edge node combines the local transport for sensors with a `Client` for the hub, using `ClientConfig` for the timeouts:
+
 ```rust
-use network_protocol::{transport::local, config::EdgeConfig};
+use network_protocol::config::ClientConfig;
+use network_protocol::service::client::Client;
+use network_protocol::transport::local;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = EdgeConfig {
-        // Local IPC for sensors
-        local_socket: "/tmp/sensor.sock",
-        
-        // Upstream connection to hub
-        hub_address: "hub.example.com:8443",
-        
-        // Aggressive timeouts for edge
-        connection_timeout_ms: 5000,
-        
-        // Buffer for offline operation
-        offline_buffer_size: 10000,
-    };
-    
-    // Start edge server
-    start_edge_node(config).await?;
-    
-    Ok(())
-}
+    // Start local IPC server for sensors (a named pipe on Windows)
+    tokio::spawn(local::start_server("/tmp/sensor.sock"));
 
-async fn start_edge_node(config: EdgeConfig) -> Result<(), Box<dyn std::error::Error>> {
-    // Start local IPC server for sensors
-    tokio::spawn(async move {
-        local::start_server(config.local_socket).await
-    });
-    
-    // Connect to regional hub with retry logic
+    // Upstream connection to hub, with aggressive timeouts for edge
+    let config = ClientConfig {
+        address: "hub.example.com:9000".to_string(),
+        connection_timeout: Duration::from_secs(5),
+        operation_timeout: Duration::from_secs(2),
+        ..Default::default()
+    };
+
+    // Client does not reconnect by itself, so retry here
     loop {
-        match connect_to_hub(&config).await {
-            Ok(connection) => {
-                handle_hub_connection(connection).await;
+        match Client::connect_with_config(config.clone()).await {
+            Ok(client) => {
+                handle_hub_connection(client).await;
             }
             Err(e) => {
                 eprintln!("Hub connection failed: {}. Retrying...", e);
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                tokio::time::sleep(Duration::from_secs(5)).await;
             }
         }
     }
+}
+
+async fn handle_hub_connection(_client: Client) {
+    // Forward sensor data until a send fails, then return to reconnect
 }
 ```
 
 ### Offline-First Design
 
 ```rust
+use network_protocol::error::ProtocolError;
+use network_protocol::protocol::message::Message;
+use network_protocol::service::client::Client;
 use std::collections::VecDeque;
 
 struct OfflineBuffer {
@@ -412,7 +447,7 @@ impl OfflineBuffer {
         self.buffer.push_back(message);
     }
     
-    async fn flush_to_hub(&mut self, hub: &mut Connection) -> Result<(), Error> {
+    async fn flush_to_hub(&mut self, hub: &mut Client) -> Result<(), ProtocolError> {
         while let Some(message) = self.buffer.pop_front() {
             hub.send(message).await?;
         }
@@ -535,25 +570,39 @@ loop {
 
 #### Application Metrics
 
-```rust
-use network_protocol::utils::metrics;
+`utils::metrics::global_metrics()` returns a process-wide set of atomic counters, and `snapshot()` reads them all at once. In 1.3.0 the library does not update these counters itself: the client, the daemons and the transports never call them, so they stay at zero unless your own code records events with the methods shown below.
 
-// Periodically export metrics
-tokio::spawn(async {
-    loop {
-        let stats = metrics::get_stats();
-        
-        // Export to monitoring system
-        export_metric("handshakes_total", stats.handshakes_completed);
-        export_metric("messages_sent", stats.messages_sent);
-        export_metric("messages_received", stats.messages_received);
-        export_metric("connections_active", stats.connections_active);
-        export_metric("errors_total", stats.errors_total);
-        
-        tokio::time::sleep(Duration::from_secs(60)).await;
-    }
-});
+```rust
+use network_protocol::utils::metrics::global_metrics;
+use std::time::Duration;
+
+// Call these from your own connection and message handling code
+fn on_message_sent(bytes: u64) {
+    global_metrics().message_sent(bytes);
+}
+
+// Periodically export metrics; `export_metric` is your own exporter
+fn start_metrics_export(export_metric: fn(&str, u64)) {
+    tokio::spawn(async move {
+        loop {
+            let stats = global_metrics().snapshot();
+
+            // Export to monitoring system
+            export_metric("handshakes_total", stats.handshakes_total);
+            export_metric("messages_sent", stats.messages_sent);
+            export_metric("messages_received", stats.messages_received);
+            export_metric("connections_active", stats.connections_active);
+            export_metric("errors_total", stats.connection_errors + stats.protocol_errors);
+
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
+    });
+}
 ```
+
+The recording methods are `connection_established()`, `connection_closed()`, `handshake_attempt()`, `handshake_success()`, `handshake_failed()`, `message_sent(bytes)`, `message_received(bytes)`, `compression_attempt()`, `compression_success()`, `encryption_attempt()`, `encryption_success()`, `replay_cache_hit()`, `replay_cache_miss()`, `connection_error()` and `protocol_error()`. `log_metrics()` writes a snapshot to the log at INFO level.
+
+`ConnectionPool` does keep its own metrics up to date. `pool.metrics()` returns `PoolMetrics` with connections created, reused and evicted, acquisition errors, active and idle connections, plus `average_wait_time_us()` and `utilization_percent()`.
 
 #### System Metrics
 
@@ -636,14 +685,45 @@ groups:
 Always use TLS in production:
 
 ```rust
-use network_protocol::transport::tls;
+use network_protocol::transport::tls::{TlsServerConfig, TlsVersion};
 
-// Load certificates
-let tls_config = tls::ServerConfig::builder()
-    .with_cert_and_key("fullchain.pem", "privkey.pem")
-    .with_client_auth_optional() // For mTLS
-    .build()?;
+fn server_tls_config() -> Result<TlsServerConfig, Box<dyn std::error::Error>> {
+    // Load certificates
+    let tls_config = TlsServerConfig::new("fullchain.pem", "privkey.pem")
+        .with_client_auth("client-ca.pem") // mTLS: client certificates signed by this CA
+        .require_client_auth(false)        // Optional: also accept clients without a certificate
+        .with_tls_versions(vec![TlsVersion::TLS13]);
+
+    // Check the configuration at startup rather than on the first connection
+    tls_config.load_server_config()?;
+    Ok(tls_config)
+}
 ```
+
+Notes for 1.3.0:
+
+- `require_client_auth(true)` without `with_client_auth(..)` is now a configuration error. It used to accept every client.
+- Clients must finish the TLS handshake within 10 seconds, so stalled connections are dropped.
+- The key file must hold a PEM `PRIVATE KEY` (PKCS#8) block. A key that starts with `RSA PRIVATE KEY` or `EC PRIVATE KEY` is not loaded; convert it with `openssl pkcs8 -topk8 -nocrypt -in privkey.pem -out privkey-pkcs8.pem`.
+
+On the client side, trust a private CA with `with_root_ca(..)` and, if you want to tie clients to one certificate, pin it on top of CA validation:
+
+```rust
+use network_protocol::service::tls_client::TlsClient;
+use network_protocol::transport::tls::TlsClientConfig;
+
+// `pin` is 32 raw bytes from TlsServerConfig::calculate_cert_hash(&server_cert)
+async fn connect_internal(pin: Vec<u8>) -> Result<TlsClient, Box<dyn std::error::Error>> {
+    let config = TlsClientConfig::new("internal.example.com")
+        .with_root_ca("internal-ca.pem")                         // Instead of the system roots
+        .with_client_certificate("client.pem", "client-key.pem") // mTLS
+        .with_pinned_cert_hash(pin);                             // Checked on top of CA validation
+
+    Ok(TlsClient::connect("10.0.1.10:8443", config).await?)
+}
+```
+
+Do not use `insecure()` in production. It skips CA and hostname validation; it exists for development servers with self-signed certificates.
 
 ### Certificate Management
 
@@ -840,7 +920,7 @@ spec:
     spec:
       containers:
       - name: server
-        image: network-protocol:1.2.4
+        image: network-protocol:1.3.0
         ports:
         - containerPort: 8443
         resources:
@@ -868,14 +948,17 @@ use std::time::Duration;
 
 let config = PoolConfig {
     min_size: 10,          // Pre-warm connections
-    max_size: 100,         // Maximum concurrent
+    max_size: 100,         // Maximum idle connections kept in the pool
     idle_timeout: Duration::from_secs(300),   // 5 min
-    max_lifetime: Duration::from_secs(3600),  // 1 hour
+    max_lifetime: Duration::from_secs(3600),  // 1 hour, counted from creation
+    ..Default::default()
 };
 
 let pool = ConnectionPool::new(factory, config)?;
 let conn = pool.acquire().await?;  // Reuses existing or creates new
 ```
+
+`max_size` limits how many idle connections the pool keeps, not how many are in use: a connection released while the pool is full is closed. `max_lifetime` counts from when the connection was created, so connections in steady use are still retired. Both behave this way from 1.3.0.
 
 ---
 

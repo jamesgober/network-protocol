@@ -1,6 +1,8 @@
 //! Integration tests for configuration validation
 
 #![allow(clippy::expect_used)]
+// Still covers validation of the config fields deprecated in 1.3.0.
+#![allow(deprecated)]
 
 use network_protocol::config::{
     ClientConfig, LoggingConfig, NetworkConfig, ServerConfig, TransportConfig,

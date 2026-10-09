@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-09
+
+A review of every TLS, transport and server setting for values that were accepted and then ignored, or that failed open. Each one found is fixed below. Settings that cannot do what they say without a new design are deprecated, so the compiler now tells you they have no effect.
+
+### Security
+- `TlsClientConfig::with_pinned_cert_hash(..)` was ignored unless `insecure()` was also set. Without `insecure()` the client built a standard webpki verifier and never looked at the pin, so any certificate from a trusted CA for the host name was accepted, contrary to the documentation. The pin is now checked on top of CA and hostname validation: the certificate must chain to a trusted root, match the server name, and have the pinned SHA-256 fingerprint.
+- `TlsServerConfig::require_client_auth(true)` without `with_client_auth(..)` required nothing: with no client CA the server was built with no client authentication at all and accepted every client. `load_server_config()` now returns `ProtocolError::TlsError("client authentication is required but no client CA is configured: call with_client_auth(\"<client-ca.pem>\") ...")`. Servers that call `with_client_auth(..)` are unaffected.
+- The packet codec read the 4-byte length from a frame header and then waited for that many bytes before checking anything. The magic, the version and `MAX_PAYLOAD_SIZE` (16 MiB) were only checked once the whole frame had arrived, so a peer could send a 9-byte header declaring up to 4 GiB and make the connection buffer it, on every transport (TLS, TCP, Unix sockets, named pipes). The header is now validated as soon as its 9 bytes arrive, and a frame that declares more than `MAX_PAYLOAD_SIZE` fails with `ProtocolError::OversizedPacket` before any payload is buffered. The encoder also refuses to send a payload over the limit instead of sending one the peer must reject (or, above 4 GiB, a truncated length that desynchronises the stream).
+- TLS servers (`transport::tls::start_server` and `service::tls_daemon`) waited indefinitely for a client to complete the handshake, so stalled connections could be held open without limit. The handshake now has to finish within `HANDSHAKE_TIMEOUT` (10 s), which already existed but was unused. The client side of `tls::connect` and `TlsClient` has the same bound.
+- `TlsServerConfig::generate_self_signed(..)` wrote the private key with the default file mode (usually 0644 on Unix). It is now created with mode 0600.
+
+### Fixed
+- A pinned hash that is not 32 bytes long can never match, but `with_pinned_cert_hash(..)` only logged a warning and every handshake then failed with a misleading "hash mismatch". `load_client_config()` now returns a `TlsError` naming the length it got and pointing to `TlsServerConfig::calculate_cert_hash()`. This also catches the common mistake of passing a hex string.
+- `service::tls_daemon::start()` dropped the only sender of its shutdown channel, so the server returned about half a second after it started. It now runs until Ctrl-C. `start_with_shutdown()` no longer treats a channel whose senders were all dropped as a shutdown request; it shuts down when `()` is sent.
+- `TlsClient::connect_with_session(.., Some(cache))` only logged "Session resumption enabled": a fresh rustls config was built per connection, so nothing was ever resumed. The `SessionCache` now holds the rustls session store, plus the rustls client config built for each distinct `TlsClientConfig` (rustls only resumes with the verifier that checked the original session), and a reconnect to the same server name resumes the TLS session. Certificate and CA files are read on the first connection with a given configuration; call `SessionCache::clear()` after replacing them.
+- `tls::connect()` and `TlsClient::connect*()` leaked the server name string on every connection (`Box::leak`). They now use an owned `ServerName`.
+- `ServerConfig::connection_timeout` was applied to the whole session in `service::daemon`, so every connection was closed once it was older than the timeout (5 s by default), however active it was. It now bounds each handshake step, as before, and an established session lasts until the client disconnects or the keep-alive finds it dead.
+- Shutting down `service::daemon` or `service::tls_daemon` waited for open sessions for the grace period (`ServerConfig::shutdown_timeout`, or 10 s for the TLS daemon) and then returned while leaving those sessions running. Sessions still open when the grace period ends are now closed.
+- `start_daemon_no_signals()` installed a Ctrl-C handler despite its name. It now stops only through `Daemon::shutdown()`.
+- `ServerConfig::max_connections` was validated but never enforced. Connections accepted over the limit are now closed immediately.
+- `ServerConfig::backpressure_limit` was validated but never used; the per-connection queues were fixed at 32 messages. They now use the configured limit.
+- `service::daemon::start_daemon_no_signals(config, dispatcher)` ignored `dispatcher` and served with its own default handlers. It now dispatches with the dispatcher it is given.
+- `ClientConfig::operation_timeout` was never used. It now bounds `Client::send()`; receives keep their 5 s default.
+- `PoolConfig::max_size` was validated but the pool kept up to 100 idle connections whatever it was set to. Released connections beyond `max_size` are now closed.
+- `PoolConfig::max_lifetime` was reset each time a connection was returned to the pool, so a connection in steady use was never retired. The lifetime now counts from when the connection was created.
+- `TlsClientConfig::load_client_config()` accepted an empty system root store and then failed every handshake. It now returns a `TlsError` that suggests `with_root_ca(..)`.
+- `utils::logging::init_logging()` with `log_dir` set wrote nothing to the log file: the guard of the non-blocking file writer was dropped inside the function, which shut the writer down. The guard is now kept for the life of the process.
+- The `insecure()` docs referred to a `dangerous_configuration` feature that does not exist.
+- README and `docs/` described TLS and server APIs that do not exist (`TlsConfig { .. }` literals, `client::connect_tls`, `tls::ServerConfig::builder()`, a running server from `daemon::new_with_config`, and others), and some metrics, logging and handshake examples did not match the code. They now use the real API.
+- The key-loading error now says which key format is supported (PEM `PRIVATE KEY`, PKCS#8).
+
+### Added
+- `TlsClientConfig::with_root_ca(path)`: trust the CA certificates in a PEM file instead of the system roots, for servers with a private CA. Before this, the only way to reach such a server was `insecure()`. Combining it with `insecure()` is a config error.
+
+### Deprecated
+- `ClientConfig::auto_reconnect`, `max_reconnect_attempts` and `reconnect_delay`: `Client` has never reconnected, whatever they are set to. They now default when missing from a config file, so they can be removed from it.
+- Every field of `TransportConfig`: nothing reads them. They now default when missing from a config file. The codec always enforces `MAX_PAYLOAD_SIZE`, the built-in services always encrypt, and compression is only applied where `utils::compression` is called directly.
+- `service::daemon::new_with_config()` (starts nothing and ignores its dispatcher), `Daemon::run()` (returns immediately) and `Daemon::shutdown_with_timeout()` (ignores its timeout). Use `start_daemon_no_signals()` and `Daemon::shutdown()`.
+
+### Known Issues
+- `bincode` 1.3.3 remains unmaintained (RUSTSEC-2025-0141). It defines the wire encoding and appears in the public `ProtocolError` type, so replacing it is a breaking change planned for 2.0.
+
 ## [1.2.4] - 2026-10-08
 
 ### Security
@@ -312,7 +354,8 @@ Performance-focused release with adaptive compression, buffer pooling, zero-allo
 - Cross-platform CI testing workflow
 
 
-[Unreleased]: https://github.com/jamesgober/network-protocol/compare/v1.2.4...HEAD
+[Unreleased]: https://github.com/jamesgober/network-protocol/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/jamesgober/network-protocol/compare/v1.2.4...v1.3.0
 [1.2.4]: https://github.com/jamesgober/network-protocol/compare/v1.2.3...v1.2.4
 [1.2.3]: https://github.com/jamesgober/network-protocol/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/jamesgober/network-protocol/compare/v1.2.1...v1.2.2

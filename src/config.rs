@@ -182,10 +182,12 @@ pub struct ServerConfig {
     /// Server listen address (e.g., "127.0.0.1:9000")
     pub address: String,
 
-    /// Maximum number of messages in the backpressure queue
+    /// Maximum number of messages queued per connection before the server stops
+    /// reading from that client (backpressure)
     pub backpressure_limit: usize,
 
-    /// Timeout for client connections
+    /// Timeout for each step of a client's handshake (the server waits at most this
+    /// long for each handshake message). An established session is not limited by it.
     #[serde(with = "duration_serde")]
     pub connection_timeout: Duration,
 
@@ -197,7 +199,8 @@ pub struct ServerConfig {
     #[serde(with = "duration_serde")]
     pub shutdown_timeout: Duration,
 
-    /// Maximum number of concurrent connections
+    /// Maximum number of concurrent connections. Connections accepted beyond this
+    /// limit are closed immediately.
     pub max_connections: usize,
 }
 
@@ -284,7 +287,7 @@ pub struct ClientConfig {
     #[serde(with = "duration_serde")]
     pub connection_timeout: Duration,
 
-    /// Timeout for individual operations
+    /// Timeout for sending a single message with `Client::send`
     #[serde(with = "duration_serde")]
     pub operation_timeout: Duration,
 
@@ -297,16 +300,31 @@ pub struct ClientConfig {
     pub heartbeat_interval: Duration,
 
     /// Whether to automatically reconnect on connection loss
+    ///
+    /// Not implemented: `Client` never reconnects, whatever this is set to.
+    #[deprecated(
+        since = "1.3.0",
+        note = "not applied: Client never reconnects; reconnect in your own code with Client::connect_with_config()"
+    )]
+    #[serde(default)]
     pub auto_reconnect: bool,
 
     /// Maximum number of reconnect attempts before giving up
+    ///
+    /// Not implemented, see `auto_reconnect`.
+    #[deprecated(since = "1.3.0", note = "not applied: Client never reconnects")]
+    #[serde(default)]
     pub max_reconnect_attempts: u32,
 
     /// Delay between reconnect attempts
-    #[serde(with = "duration_serde")]
+    ///
+    /// Not implemented, see `auto_reconnect`.
+    #[deprecated(since = "1.3.0", note = "not applied: Client never reconnects")]
+    #[serde(default, with = "duration_serde")]
     pub reconnect_delay: Duration,
 }
 
+#[allow(deprecated)] // still fills in the deprecated fields
 impl Default for ClientConfig {
     fn default() -> Self {
         Self {
@@ -324,6 +342,7 @@ impl Default for ClientConfig {
 
 impl ClientConfig {
     /// Validate client configuration
+    #[allow(deprecated)] // still checks the deprecated reconnect fields
     pub fn validate(&self) -> Vec<String> {
         let mut errors = Vec::new();
 
@@ -369,26 +388,56 @@ impl ClientConfig {
 }
 
 /// Transport configuration
+///
+/// None of these settings is read by the built-in transports, clients or servers, so
+/// every field is deprecated. The packet codec always enforces `MAX_PAYLOAD_SIZE`, the
+/// built-in services always encrypt, and compression is applied only where you call
+/// `utils::compression` yourself.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TransportConfig {
     /// Whether to enable compression
+    #[deprecated(
+        since = "1.3.0",
+        note = "not applied by any transport; call utils::compression directly"
+    )]
+    #[serde(default)]
     pub compression_enabled: bool,
 
     /// Whether to enable encryption
+    #[deprecated(
+        since = "1.3.0",
+        note = "not applied: the built-in services always encrypt"
+    )]
+    #[serde(default)]
     pub encryption_enabled: bool,
 
     /// Maximum allowed payload size in bytes
+    #[deprecated(
+        since = "1.3.0",
+        note = "not applied: the packet codec always enforces MAX_PAYLOAD_SIZE"
+    )]
+    #[serde(default)]
     pub max_payload_size: usize,
 
     /// Compression level (when compression is enabled)
+    #[deprecated(
+        since = "1.3.0",
+        note = "not applied by any transport; call utils::compression directly"
+    )]
+    #[serde(default)]
     pub compression_level: i32,
 
     /// Minimum payload size (bytes) before compression is applied
     /// Payloads smaller than this threshold should bypass compression to reduce overhead
+    #[deprecated(
+        since = "1.3.0",
+        note = "not applied by any transport; call utils::compression directly"
+    )]
     #[serde(default)]
     pub compression_threshold_bytes: usize,
 }
 
+#[allow(deprecated)] // still fills in the deprecated fields
 impl Default for TransportConfig {
     fn default() -> Self {
         Self {
@@ -403,6 +452,7 @@ impl Default for TransportConfig {
 
 impl TransportConfig {
     /// Validate transport configuration
+    #[allow(deprecated)] // still checks the deprecated fields
     pub fn validate(&self) -> Vec<String> {
         let mut errors = Vec::new();
 

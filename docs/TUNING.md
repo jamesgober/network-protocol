@@ -170,65 +170,84 @@ debug = true            # Enable debug symbols for profiling
 
 ### Connection Pool Sizing
 
-Configure based on expected concurrency:
+Configure the server's connection limit based on expected concurrency. `ServerConfig` applies to `service::daemon`; the TLS daemon does not take one.
 
 ```rust
-use network_protocol::config::Config;
+use network_protocol::config::ServerConfig;
+use std::time::Duration;
 
-let config = Config {
-    // For high-concurrency servers (1000+ connections)
+// For high-concurrency servers (1000+ connections)
+let high_concurrency = ServerConfig {
     max_connections: 2000,
-    connection_timeout_ms: 30000,
-    
-    // For low-latency applications
+    connection_timeout: Duration::from_secs(30),
+    ..Default::default()
+};
+
+// For low-latency applications
+let low_latency = ServerConfig {
     max_connections: 100,
-    connection_timeout_ms: 5000,
+    connection_timeout: Duration::from_secs(5),
+    ..Default::default()
 };
 ```
+
+Connections accepted over `max_connections` are closed immediately (from 1.3.0). `connection_timeout` bounds each step of a client's handshake; it does not limit how long an established session lasts.
 
 **Guidelines:**
 - **Web servers**: max_connections = expected_concurrent_users × 1.5
 - **Microservices**: max_connections = upstream_services × 10
 - **Real-time systems**: Keep under 100 for predictable latency
 
+For outgoing connections, `PoolConfig::max_size` sets how many idle connections a `ConnectionPool` keeps; extra released connections are closed.
+
 ### Channel Buffer Sizes
 
-Tune backpressure channels based on workload:
+Each server connection queues incoming messages in a bounded channel whose depth is `ServerConfig::backpressure_limit` (default: 32). When the queue is full, the server stops reading from that client until it drains. Tune it based on workload:
 
 ```rust
-// Default: 1000 messages
-const DEFAULT_CHANNEL_CAPACITY: usize = 1000;
+use network_protocol::config::ServerConfig;
 
 // High-throughput (trade memory for throughput)
-const HIGH_THROUGHPUT_CAPACITY: usize = 10000;
+let high_throughput = ServerConfig {
+    backpressure_limit: 1000,
+    ..Default::default()
+};
 
 // Low-latency (minimize queuing)
-const LOW_LATENCY_CAPACITY: usize = 100;
+let low_latency = ServerConfig {
+    backpressure_limit: 16,
+    ..Default::default()
+};
 ```
 
-**Monitoring**: Use `metrics::channel_depth()` to track buffer utilization.
+Before 1.3.0 the queues were fixed at 32 messages whatever this was set to.
 
 ### Timeout Configuration
 
 Balance responsiveness with reliability:
 
 ```rust
+use network_protocol::config::ClientConfig;
 use std::time::Duration;
 
 // Aggressive (low-latency)
-let timeouts = Timeouts {
-    connect: Duration::from_millis(500),
-    read: Duration::from_secs(1),
-    write: Duration::from_secs(1),
+let aggressive = ClientConfig {
+    connection_timeout: Duration::from_millis(500), // Connect and handshake response
+    operation_timeout: Duration::from_secs(1),      // Each Client::send
+    response_timeout: Duration::from_secs(1),       // Client::send_and_wait
+    ..Default::default()
 };
 
 // Conservative (unreliable networks)
-let timeouts = Timeouts {
-    connect: Duration::from_secs(5),
-    read: Duration::from_secs(30),
-    write: Duration::from_secs(30),
+let conservative = ClientConfig {
+    connection_timeout: Duration::from_secs(5),
+    operation_timeout: Duration::from_secs(30),
+    response_timeout: Duration::from_secs(30),
+    ..Default::default()
 };
 ```
+
+`Client::recv()` uses a fixed 5 second timeout. TLS handshakes, on both the client and the server, must finish within 10 seconds.
 
 ---
 
@@ -395,24 +414,34 @@ criterion_main!(benches);
 
 ### Built-in Metrics
 
-The library provides atomic counters for monitoring:
+The library provides atomic counters for monitoring in `utils::metrics`:
 
 ```rust
-use network_protocol::utils::metrics;
+use network_protocol::utils::metrics::global_metrics;
 
-// Get current metrics
-let stats = metrics::get_stats();
-println!("Handshakes: {}", stats.handshakes_completed);
-println!("Messages: {}", stats.messages_sent);
-println!("Errors: {}", stats.errors_total);
+fn print_metrics() {
+    // Get current metrics
+    let stats = global_metrics().snapshot();
+    println!("Handshakes: {}", stats.handshakes_success);
+    println!("Messages: {}", stats.messages_sent);
+    println!("Errors: {}", stats.connection_errors + stats.protocol_errors);
+}
 ```
 
-**Available metrics:**
-- `handshakes_completed`: Total successful handshakes
-- `messages_sent`: Total messages transmitted
-- `messages_received`: Total messages received
-- `connections_active`: Current active connections
-- `errors_total`: Total errors encountered
+In 1.3.0 nothing in the library updates these counters. The client, the daemons and the transports do not record anything, so every value stays at zero unless your own code calls the recording methods (`message_sent(bytes)`, `connection_established()`, `handshake_success()` and so on). Use them for your own events, or rely on logging and the pool metrics below.
+
+**Available metrics (fields of `MetricsSnapshot`):**
+- `connections_total`, `connections_active`
+- `handshakes_total`, `handshakes_success`, `handshakes_failed`
+- `messages_sent`, `messages_received`, `bytes_sent`, `bytes_received`
+- `compression_total`, `compression_success`, `encryption_total`, `encryption_success`
+- `replay_cache_hits`, `replay_cache_misses`
+- `connection_errors`, `protocol_errors`
+- `uptime_seconds`: time since the metrics were first used
+
+`utils::metrics::Timer::start("operation")` logs how long an operation took, at DEBUG level, when it is dropped.
+
+`ConnectionPool::metrics()` is updated by the pool itself: connections created, reused and evicted, acquisition errors, active and idle connections, `average_wait_time_us()` and `utilization_percent()`.
 
 ### Logging Configuration
 
@@ -425,8 +454,8 @@ use tracing::Level;
 let config = LogConfig {
     app_name: "my-app".to_string(),
     log_level: Level::INFO,      // INFO for production
-    log_to_file: true,
-    log_dir: "/var/log/my-app".into(),
+    log_dir: Some("/var/log/my-app".to_string()), // None logs to the console only
+    ..Default::default()
 };
 
 init_with_config(&config);

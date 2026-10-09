@@ -1,5 +1,4 @@
 use futures::{SinkExt, StreamExt};
-use rustls::pki_types::ServerName;
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
@@ -12,6 +11,7 @@ use crate::error::{ProtocolError, Result};
 use crate::protocol::message::Message;
 use crate::transport::session_cache::SessionCache;
 use crate::transport::tls::TlsClientConfig;
+use crate::utils::timeout::HANDSHAKE_TIMEOUT;
 
 /// TLS secure client for connecting to TLS-enabled servers
 ///
@@ -35,6 +35,11 @@ impl TlsClient {
 
     /// Connect to a TLS server with session resumption support
     ///
+    /// With a session cache, the server's session tickets are stored in it and offered
+    /// on later connections that use the same cache, so a reconnect to the same server
+    /// name resumes the session instead of running a full handshake. Without one, every
+    /// connection does a full handshake.
+    ///
     /// # Arguments
     /// * `addr` - Server address to connect to
     /// * `config` - TLS configuration
@@ -54,19 +59,28 @@ impl TlsClient {
         config: TlsClientConfig,
         session_cache: Option<Arc<SessionCache>>,
     ) -> Result<Self> {
-        let tls_config = config.load_client_config()?;
-        let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(tls_config));
+        let tls_config = match &session_cache {
+            // The cache supplies one shared config per TLS configuration, so later
+            // connections see the same verifier and session store and can resume.
+            Some(cache) => {
+                debug!("Session resumption enabled");
+                cache.tls_client_config(&config)?
+            }
+            None => {
+                let mut tls_config = config.load_client_config()?;
+                tls_config.resumption = rustls::client::Resumption::disabled();
+                Arc::new(tls_config)
+            }
+        };
+        let connector = tokio_rustls::TlsConnector::from(tls_config);
+
+        let domain = config.owned_server_name()?;
 
         let stream = TcpStream::connect(addr).await?;
 
-        // Create ServerName from owned string to ensure 'static lifetime
-        // Note: Box::leak() is used here to satisfy tokio_rustls' 'static requirement
-        let server_name_str = config.server_name_string();
-        let domain_static: &'static str = Box::leak(server_name_str.into_boxed_str());
-        let domain = ServerName::try_from(domain_static)
-            .map_err(|_| ProtocolError::TlsError("Invalid server name".into()))?;
-
-        let tls_stream = connector.connect(domain, stream).await?;
+        let tls_stream = tokio::time::timeout(HANDSHAKE_TIMEOUT, connector.connect(domain, stream))
+            .await
+            .map_err(|_| ProtocolError::Timeout)??;
         let framed = Framed::new(tls_stream, PacketCodec);
 
         let session_id = format!(
@@ -77,11 +91,6 @@ impl TlsClient {
                 .unwrap_or_default()
                 .as_secs()
         );
-
-        // Store session after successful connection (for future resumptions)
-        if let Some(ref _cache) = session_cache {
-            debug!("Session resumption enabled");
-        }
 
         Ok(Self {
             framed,

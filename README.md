@@ -68,7 +68,7 @@
 - Configurable connection timeouts for all network operations with proper error handling
 - Heartbeat mechanism with keep-alive ping/pong messages for connection health monitoring
 - Automatic detection and cleanup of dead connections
-- Client-side timeout handling with reconnection capabilities
+- Client-side timeouts for connecting, sending and waiting for a response
 - Connection pooling with health checks, LRU reuse, and circuit breaker
 - Request multiplexing with ID-tagged routing and timeout cleanup
 - **Optimized Release Builds**: LTO + single codegen unit for maximum performance
@@ -107,7 +107,7 @@
 Add the library to your `Cargo.toml`:
 ```toml
 [dependencies]
-network-protocol = "1.2.4"
+network-protocol = "1.3"
 ```
 
 <br>
@@ -116,210 +116,209 @@ network-protocol = "1.2.4"
 
 ### TCP Server with Backpressure and Structured Logging
 ```rust
-use network_protocol::utils::logging;
-use network_protocol::service::daemon::{self, ServerConfig};
-use network_protocol::config::NetworkConfig;
+use network_protocol::config::ServerConfig;
 use network_protocol::protocol::dispatcher::Dispatcher;
-use network_protocol::error::Result;
+use network_protocol::protocol::message::Message;
+use network_protocol::service::daemon;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{info, warn};
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    // Initialize structured logging
-    logging::init_logging(Some("info"), None).expect("Failed to initialize logging");
-    
-    // Create a dispatcher
-    let dispatcher = Arc::new(Dispatcher::default());
-    
-    // Register message handlers
-    dispatcher.register("ECHO", |msg| {
-        info!(message_type = "ECHO", "Processing echo request");
-        Ok(msg.clone())
-    });
-    
-    // Option 1: Load configuration from file
-    // let config = NetworkConfig::from_file("config.toml")?.server;
-    
-    // Option 2: Load configuration from environment variables
-    // let config = NetworkConfig::from_env()?.server;
-    
-    // Option 3: Configure server with custom settings
-    let config = ServerConfig {
-        address: "127.0.0.1:9000".to_string(),
-        backpressure_limit: 100, // Limit pending messages
-        connection_timeout: Duration::from_secs(30),
-        heartbeat_interval: Duration::from_secs(15),
-        shutdown_timeout: Duration::from_secs(10),
-        max_connections: 1000,
-    };
-    
-    // Start server with configuration
-    let server = daemon::new_with_config(config, dispatcher);
-    
-    // Handle Ctrl+C for graceful shutdown
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.expect("Failed to listen for ctrl+c");
-        info!("Initiating graceful shutdown...");
-        server.shutdown(Some(Duration::from_secs(10))).await;
-    });
-    
-    // Run server until stopped
-    info!("Server starting on 127.0.0.1:9000");
-    server.run().await
-}
-```
-
-### TLS Server
-```rust
-#[tokio::main]
-async fn main() -> Result<()> {
-    // Generate or load certificates
-    let cert_config = TlsConfig {
-        cert_path: "server_cert.pem",
-        key_path: "server_key.pem",
-        ca_path: Some("ca_cert.pem"), // For mTLS
-        verify_client: true, // Enable mTLS
-    };
-    
-    // Start TLS server
-    network_protocol::service::tls_daemon::start("127.0.0.1:9443", cert_config).await?;
-    Ok(())
-}
-```
-
-### Client with Timeout Handling
-```rust
-use network_protocol::utils::logging;
-use network_protocol::service::client::{self, ClientConfig};
-use network_protocol::config::NetworkConfig;
-use network_protocol::protocol::message::Message;
-use network_protocol::error::ProtocolError;
-use std::time::Duration;
-use tracing::{info, error};
-use tokio::time::timeout;
-
-#[tokio::main]
-async fn main() -> Result<(), ProtocolError> {
-    // Initialize structured logging
-    logging::init_logging(Some("info"), None)?;
-    
-    // Option 1: Load configuration from file
-    // let config = NetworkConfig::from_file("config.toml")?.client;
-    
-    // Option 2: Load from environment variables
-    // let config = NetworkConfig::from_env()?.client;
-    
-    // Option 3: Configure client with custom settings
-    let config = ClientConfig {
-        address: "127.0.0.1:9000".to_string(),
-        connection_timeout: Duration::from_secs(5),
-        operation_timeout: Duration::from_secs(3),
-        response_timeout: Duration::from_secs(30),
-        heartbeat_interval: Duration::from_secs(15),
-        auto_reconnect: true,
-        max_reconnect_attempts: 3,
-        reconnect_delay: Duration::from_secs(1),
-    };
-    
-    // Connect with timeout handling
-    info!("Connecting to server...");
-    let mut conn = match timeout(Duration::from_secs(5), client::connect_with_config(config)).await {
-        Ok(Ok(conn)) => conn,
-        Ok(Err(e)) => {
-            error!(error = ?e, "Failed to connect to server");
-            return Err(e);
-        }
-        Err(_) => {
-            error!("Connection timeout");
-            return Err(ProtocolError::Timeout);
-        }
-    };
-    
-    info!("Connected successfully");
-    
-    // Send message with timeout
-    match timeout(Duration::from_secs(3), conn.secure_send(Message::Echo("hello".into()))).await {
-        Ok(Ok(_)) => info!("Message sent successfully"),
-        Ok(Err(e)) => {
-            error!(error = ?e, "Failed to send message");
-            return Err(e);
-        }
-        Err(_) => {
-            error!("Send timeout");
-            return Err(ProtocolError::Timeout);
-        }
-    }
-    
-    // Receive reply with timeout
-    let reply = match timeout(Duration::from_secs(3), conn.secure_recv()).await {
-        Ok(Ok(msg)) => msg,
-        Ok(Err(e)) => {
-            error!(error = ?e, "Failed to receive reply");
-            return Err(e);
-        }
-        Err(_) => {
-            error!("Receive timeout");
-            return Err(ProtocolError::Timeout);
-        }
-    };
-    
-    info!(reply = ?reply, "Received reply");
-    
-    // Close connection gracefully
-    conn.close().await?
-    
-    Ok(())
-}
-```
-
-### TLS Client
-```rust
-use network_protocol::service::client::{self, TlsClientConfig};
-use network_protocol::protocol::message::Message;
-use network_protocol::error::Result;
 use tracing::info;
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    // Configure TLS client
-    let tls_config = TlsClientConfig {
-        cert_path: Some("client_cert.pem"), // For mTLS
-        key_path: Some("client_key.pem"),  // For mTLS
-        ca_path: Some("ca_cert.pem"),      // Server verification
-        server_name: "example.com",         // SNI
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize structured logging
+    network_protocol::init();
+
+    // Create a dispatcher. The server uses only the handlers registered here.
+    let dispatcher = Arc::new(Dispatcher::new());
+
+    // Register message handlers
+    dispatcher.register("PING", |_| Ok(Message::Pong))?;
+    dispatcher.register("ECHO", |msg| {
+        info!(message_type = "ECHO", "Processing echo request");
+        Ok(msg.clone())
+    })?;
+
+    // Option 1: Load configuration from file
+    // let config = network_protocol::config::NetworkConfig::from_file("config.toml")?.server;
+
+    // Option 2: Load configuration from environment variables
+    // let config = network_protocol::config::NetworkConfig::from_env()?.server;
+
+    // Option 3: Configure server with custom settings
+    let config = ServerConfig {
+        address: "127.0.0.1:9000".to_string(),
+        backpressure_limit: 100,                     // Messages queued per connection before reads pause
+        connection_timeout: Duration::from_secs(10), // Limit for each handshake step
+        heartbeat_interval: Duration::from_secs(15),
+        shutdown_timeout: Duration::from_secs(10),   // How long shutdown waits for open connections
+        max_connections: 1000,                       // Connections over this are closed on accept
     };
-    
-    // Connect with TLS
-    let mut conn = client::connect_tls(
-        "127.0.0.1:9443", 
-        tls_config
-    ).await?;
-    
-    info!("Connected securely to TLS server");
-    
-    // Communicate securely
-    conn.send(Message::Echo("secure message".into())).await?;
-    let reply = conn.receive().await?;
-    
-    info!(response = ?reply, "Received secure response");
-    
-    // Close connection properly
-    conn.close().await?
+
+    // Start the server in a background task and keep a handle to it
+    let mut server = daemon::start_daemon_no_signals(config, dispatcher).await?;
+    info!(address = %server.address, "Server started");
+
+    // Stop on Ctrl+C
+    tokio::signal::ctrl_c().await?;
+    info!("Initiating graceful shutdown...");
+    // Signals the server task. It waits up to shutdown_timeout for open
+    // connections, but only while the runtime is still running.
+    server.shutdown().await?;
+
+    Ok(())
 }
 ```
+
+`start_daemon_no_signals()` does not install a Ctrl+C handler, so the example waits for Ctrl+C itself. If the built-in `PING` and `ECHO` handlers are all you need, `daemon::start_with_config(config).await?` runs the server in the current task until Ctrl+C.
+
+`daemon::new_with_config()`, `Daemon::run()` and `Daemon::shutdown_with_timeout()` are deprecated in 1.3.0: the first never started a server, `run()` returns at once, and the timeout argument was ignored. Use `start_daemon_no_signals()` and `Daemon::shutdown()`, and set the wait with `ServerConfig::shutdown_timeout`.
+
+### TLS Server
+```rust
+use network_protocol::service::tls_daemon;
+use network_protocol::transport::tls::TlsServerConfig;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    network_protocol::init();
+
+    // PEM certificate chain and PKCS#8 private key
+    let config = TlsServerConfig::new("server_cert.pem", "server_key.pem")
+        // mTLS: require a client certificate signed by this CA
+        .with_client_auth("client_ca.pem");
+
+    // Serves PING and ECHO until Ctrl+C
+    tls_daemon::start("127.0.0.1:9443", config).await?;
+    Ok(())
+}
+```
+
+To accept clients with or without a certificate, add `.require_client_auth(false)` after `with_client_auth(..)`. A certificate that is presented must still be signed by the client CA. Calling `require_client_auth(true)` without `with_client_auth(..)` is a configuration error from 1.3.0, because there is no CA to check certificates against. Clients have 10 seconds to finish the TLS handshake.
+
+Use `tls_daemon::start_with_shutdown(addr, config, shutdown_rx)` with a `tokio::sync::mpsc::Receiver<()>` to stop the server from your own code: it shuts down when `()` is sent.
+
+### Client with Timeout Handling
+```rust
+use network_protocol::config::ClientConfig;
+use network_protocol::protocol::message::Message;
+use network_protocol::service::client::Client;
+use std::time::Duration;
+use tracing::info;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize structured logging
+    network_protocol::init();
+
+    // Option 1: Load configuration from file
+    // let config = network_protocol::config::NetworkConfig::from_file("config.toml")?.client;
+
+    // Option 2: Load from environment variables
+    // let config = network_protocol::config::NetworkConfig::from_env()?.client;
+
+    // Option 3: Configure client with custom settings
+    let config = ClientConfig {
+        address: "127.0.0.1:9000".to_string(),
+        connection_timeout: Duration::from_secs(5), // Connect and each handshake step
+        operation_timeout: Duration::from_secs(3),  // Each Client::send
+        response_timeout: Duration::from_secs(30),  // Client::send_and_wait
+        heartbeat_interval: Duration::from_secs(15),
+        ..Default::default()
+    };
+
+    // Fails with ProtocolError::Timeout if the connection or handshake takes too long
+    info!("Connecting to server...");
+    let mut client = Client::connect_with_config(config).await?;
+    info!("Connected successfully");
+
+    // Send a message, then wait for the reply
+    client.send(Message::Echo("hello".into())).await?;
+    let reply = client.recv().await?;
+    info!(reply = ?reply, "Received reply");
+
+    // Or do both in one call, bounded by response_timeout
+    let reply = client.send_and_wait(Message::Echo("hello again".into())).await?;
+    info!(reply = ?reply, "Received reply");
+
+    // Tell the server we are done; dropping the client closes the connection
+    client.send(Message::Disconnect).await?;
+
+    Ok(())
+}
+```
+
+`Client` does not reconnect on its own. `ClientConfig::auto_reconnect`, `max_reconnect_attempts` and `reconnect_delay` are deprecated in 1.3.0 because they never had any effect; to reconnect, call `Client::connect_with_config()` again.
+
+### TLS Client
+```rust
+use network_protocol::protocol::message::Message;
+use network_protocol::service::tls_client::TlsClient;
+use network_protocol::transport::tls::TlsClientConfig;
+use tracing::info;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // The server name is sent as SNI and checked against the server certificate
+    let config = TlsClientConfig::new("example.com")
+        // Trust this CA instead of the system roots (for a private CA)
+        .with_root_ca("ca_cert.pem")
+        // mTLS: present a client certificate
+        .with_client_certificate("client_cert.pem", "client_key.pem");
+
+    // Connect with TLS
+    let mut client = TlsClient::connect("127.0.0.1:9443", config).await?;
+
+    info!("Connected securely to TLS server");
+
+    // Communicate securely
+    let reply = client.request(Message::Echo("secure message".into())).await?;
+
+    info!(response = ?reply, "Received secure response");
+
+    // Dropping the client closes the connection
+    Ok(())
+}
+```
+
+Without `with_root_ca(..)` the client trusts the system root store. `TlsClient` also has `send()` and `receive()` for one-way messages, and `TlsClient::connect_with_session(addr, config, Some(cache))` resumes TLS sessions across connections that share the same `Arc<SessionCache>`.
+
+### Certificate Pinning
+A pin is the SHA-256 fingerprint of the server's DER certificate, as 32 raw bytes (not hex). This example reads the certificate with `rustls::pki_types`, so it needs `rustls = "0.23"` in your own `Cargo.toml`:
+
+```rust
+use network_protocol::service::tls_client::TlsClient;
+use network_protocol::transport::tls::{TlsClientConfig, TlsServerConfig};
+use rustls::pki_types::{pem::PemObject, CertificateDer};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let server_cert = CertificateDer::from_pem_file("server_cert.pem")?;
+    let pin = TlsServerConfig::calculate_cert_hash(&server_cert);
+
+    let config = TlsClientConfig::new("example.com")
+        .with_root_ca("ca_cert.pem")
+        .with_pinned_cert_hash(pin);
+
+    let _client = TlsClient::connect("127.0.0.1:9443", config).await?;
+    Ok(())
+}
+```
+
+From 1.3.0 the pin is checked on top of normal validation: the server certificate must chain to a trusted CA, match the server name, and have the pinned fingerprint. With `insecure()` the pin replaces CA validation instead, which is meant for development servers with a self-signed certificate. A pin that is not 32 bytes long makes `load_client_config()` (and so `connect`) return a `TlsError`.
 
 <br>
 
 ### Message Types
 Built-in messages include:
-- `HandshakeInit` / `HandshakeAck`
+- `SecureHandshakeInit` / `SecureHandshakeResponse` / `SecureHandshakeConfirm`
 - `Ping` / `Pong`
 - `Echo(String)`
+- `Custom { command, payload }`
+- `Disconnect`
 - `Unknown`
 
-You can extend this list with your own enums or handlers.
+Use `Message::Custom` with your own `command` names for application messages, and register a handler for each name.
 
 <br>
 
@@ -382,41 +381,45 @@ use network_protocol::error::Result;
 use std::sync::Arc;
 use tracing::info;
 
-// Create a dispatcher (typically shared between connections)
-let dispatcher = Arc::new(Dispatcher::default());
+fn build_dispatcher() -> Result<Arc<Dispatcher>> {
+    // Create a dispatcher (typically shared between connections)
+    let dispatcher = Arc::new(Dispatcher::default());
 
-// Basic handlers for built-in message types
-dispatcher.register("PING", |_| {
-    info!("Ping received, sending pong");
-    Ok(Message::Pong)
-});
+    // Basic handlers for built-in message types
+    dispatcher.register("PING", |_| {
+        info!("Ping received, sending pong");
+        Ok(Message::Pong)
+    })?;
 
-dispatcher.register("ECHO", |msg| {
-    info!(content = ?msg, "Echo request received");
-    Ok(msg.clone())
-});
+    dispatcher.register("ECHO", |msg| {
+        info!(content = ?msg, "Echo request received");
+        Ok(msg.clone())
+    })?;
 
-// Custom message type handler with complex processing
-dispatcher.register("DATA_PROCESS", |msg| {
-    if let Message::Custom(data) = msg {
-        // Process custom data
-        info!(bytes = data.len(), "Processing custom data");
-        
-        // Return a response based on processing outcome
-        if data.len() > 100 {
-            Ok(Message::Custom(vec![1, 0, 1])) // Success code
+    // Handler for Message::Custom { command: "DATA_PROCESS", .. }
+    dispatcher.register("DATA_PROCESS", |msg| {
+        if let Message::Custom { payload, .. } = msg {
+            // Process custom data
+            info!(bytes = payload.len(), "Processing custom data");
+
+            // Return a response based on processing outcome
+            let code = if payload.len() > 100 { vec![1, 0, 1] } else { vec![0, 0, 1] };
+            Ok(Message::Custom {
+                command: "DATA_PROCESS_RESULT".to_string(),
+                payload: code,
+            })
         } else {
-            Ok(Message::Custom(vec![0, 0, 1])) // Error code
+            // Handle unexpected message type
+            info!("Received incorrect message type for DATA_PROCESS");
+            Ok(Message::Unknown)
         }
-    } else {
-        // Handle unexpected message type
-        info!("Received incorrect message type for DATA_PROCESS");
-        Ok(Message::Unknown)
-    }
-});
+    })?;
+
+    Ok(dispatcher)
+}
 ```
 
-The dispatcher automatically routes incoming messages based on their `message_type()`. You can register handlers for both built-in message types and your own custom message types.
+The dispatcher routes each message by its opcode: `PING`, `PONG`, `ECHO` and `DISCONNECT` for the built-in variants, and the `command` string for `Message::Custom`. A message with no registered handler fails with `ProtocolError::UnexpectedMessage`. Pass the dispatcher to `daemon::start_daemon_no_signals()`; the TLS daemon uses its own fixed `PING` and `ECHO` handlers.
 
 <br>
 
