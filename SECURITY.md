@@ -1,5 +1,21 @@
 # Security Policy
 
+## Known limitation: the built-in encrypted transport
+
+> **Use the built-in encrypted transport only inside TLS.** The built-in
+> handshake (an X25519 key exchange, then ChaCha20-Poly1305) authenticates
+> neither side, and it has no replay protection. It does not protect traffic
+> from anyone who can intercept, change, or replay it on the network path.
+> Use it only inside an authenticated TLS channel (the TLS transport with
+> certificate verification on), and never on its own across a network you do
+> not trust. This affects the default `Client` and `service::daemon` paths,
+> which use that handshake. An authenticated key exchange with replay
+> protection is planned for 2.0.
+
+The TLS transport (`transport::tls`, `service::tls_daemon`) verifies
+certificates and host names by default and is the supported way to protect
+traffic between hosts.
+
 ## Supported Versions
 
 We release patches for security vulnerabilities for the following versions:

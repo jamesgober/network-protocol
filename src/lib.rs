@@ -17,6 +17,19 @@
 //!
 //! The protocol layer is built with a focus on performance,
 //! scalability, and ease of integration with other systems.
+//!
+//! # Security
+//!
+//! **Use the built-in encrypted transport only inside TLS.** The built-in
+//! handshake ([`protocol::handshake`]: an X25519 key exchange, then
+//! ChaCha20-Poly1305) authenticates neither side, and it has no replay
+//! protection. It does not protect traffic from anyone who can intercept,
+//! change, or replay it on the network path. Use it only inside an
+//! authenticated TLS channel ([`transport::tls`] with certificate verification
+//! on), and never on its own across a network you do not trust. The default
+//! [`service::client::Client`] and [`service::daemon`] paths use that
+//! handshake. An authenticated key exchange with replay protection is planned
+//! for 2.0.
 pub mod config;
 pub mod core;
 pub mod error;

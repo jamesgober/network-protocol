@@ -18,7 +18,17 @@
 //! - Zero heap allocations per request (pre-sized buffers)
 //! - Automatic cleanup of stale requests (timeout + memory pressure)
 //! - Backpressure via in-flight limit (prevents OOM)
+//!
+//! ## Frame size limit
+//! Every frame's declared payload length is checked against a limit before
+//! any memory is reserved for it: [`MAX_PAYLOAD_SIZE`] by default, or the
+//! value passed to [`Multiplexer::new_with_max_frame_size`]. A peer that
+//! declares a larger frame ends the receive loop, which closes the stream.
+//! The payload buffer grows as bytes arrive instead of being allocated up
+//! front, so a peer that declares a large frame and then sends nothing holds
+//! no memory for it. Outgoing payloads over the limit are refused.
 
+use crate::config::MAX_PAYLOAD_SIZE;
 use crate::error::{ProtocolError, Result};
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,6 +40,9 @@ use tracing::{debug, error, warn};
 
 /// Unique request identifier (64-bit for collision-free namespace)
 pub type RequestId = u64;
+
+/// The most payload memory reserved for a frame before its bytes arrive.
+const READ_CHUNK: usize = 64 * 1024;
 
 /// Multiplexed request frame
 #[derive(Debug, Clone)]
@@ -149,6 +162,7 @@ where
     W: AsyncWriteExt + Send + Unpin + 'static,
 {
     config: MultiplexConfig,
+    max_frame_size: usize,
     next_request_id: Arc<AtomicU64>,
     pending: Arc<DashMap<RequestId, PendingRequest>>,
     send_tx: mpsc::Sender<MultiplexFrame>,
@@ -163,8 +177,29 @@ where
     R: AsyncReadExt + Send + Unpin + 'static,
     W: AsyncWriteExt + Send + Unpin + 'static,
 {
-    /// Create a new multiplexer over a connection
+    /// Create a new multiplexer over a connection.
+    ///
+    /// Frames are limited to [`MAX_PAYLOAD_SIZE`] (16 MiB) of payload in both
+    /// directions; see [`new_with_max_frame_size`](Self::new_with_max_frame_size).
     pub fn new(reader: R, writer: W, config: MultiplexConfig) -> Self {
+        Self::new_with_max_frame_size(reader, writer, config, MAX_PAYLOAD_SIZE)
+    }
+
+    /// Create a new multiplexer over a connection, with frames limited to
+    /// `max_frame_size` bytes of payload.
+    ///
+    /// A received frame that declares a larger payload is refused before any
+    /// memory is reserved for it, and ends the receive loop (the stream is not
+    /// read again). A request whose payload is larger fails with
+    /// [`ProtocolError::OversizedPacket`] without being sent. The limit is
+    /// capped at `u32::MAX`, the largest length the frame header can carry.
+    pub fn new_with_max_frame_size(
+        reader: R,
+        writer: W,
+        config: MultiplexConfig,
+        max_frame_size: usize,
+    ) -> Self {
+        let max_frame_size = max_frame_size.min(u32::MAX as usize);
         let (send_tx, send_rx) = mpsc::channel(config.send_buffer_size);
 
         let pending = Arc::new(DashMap::new());
@@ -173,6 +208,7 @@ where
 
         let mut multiplexer = Self {
             config: config.clone(),
+            max_frame_size,
             next_request_id: Arc::new(AtomicU64::new(1)),
             pending: pending.clone(),
             send_tx,
@@ -190,7 +226,12 @@ where
         // Spawn receive task
         #[allow(clippy::expect_used)] // Reader guaranteed to exist during initialization
         let reader = multiplexer.reader.take().expect("Reader should exist");
-        tokio::spawn(Self::receive_loop(reader, pending.clone(), metrics.clone()));
+        tokio::spawn(Self::receive_loop(
+            reader,
+            pending.clone(),
+            metrics.clone(),
+            max_frame_size,
+        ));
 
         // Spawn cleanup task for stale requests
         let pending_clone = pending.clone();
@@ -207,8 +248,22 @@ where
         multiplexer
     }
 
+    /// The largest payload a frame may carry, in either direction.
+    pub fn max_frame_size(&self) -> usize {
+        self.max_frame_size
+    }
+
     /// Send a request and wait for response
+    ///
+    /// # Errors
+    ///
+    /// [`ProtocolError::OversizedPacket`] if `payload` is over
+    /// [`max_frame_size`](Self::max_frame_size); nothing is sent.
     pub async fn request(&self, payload: Vec<u8>) -> Result<Vec<u8>> {
+        if payload.len() > self.max_frame_size {
+            return Err(ProtocolError::OversizedPacket(payload.len()));
+        }
+
         // Enforce backpressure
         let _permit = self
             .backpressure
@@ -301,6 +356,7 @@ where
         mut reader: R,
         pending: Arc<DashMap<RequestId, PendingRequest>>,
         metrics: Arc<MultiplexMetrics>,
+        max_frame_size: usize,
     ) {
         loop {
             // Read frame: [request_id: u64][payload_len: u32][payload: bytes]
@@ -320,10 +376,31 @@ where
                 }
             };
 
-            let mut payload = vec![0u8; payload_len];
-            if let Err(e) = reader.read_exact(&mut payload).await {
-                error!("Failed to read payload: {}", e);
+            // The length is the peer's claim: check it before reserving any
+            // memory, and let the buffer grow only as bytes actually arrive.
+            if payload_len > max_frame_size {
+                error!(
+                    "Refusing frame {} of {} bytes (limit {} bytes); closing the stream",
+                    request_id, payload_len, max_frame_size
+                );
+                metrics.errors.fetch_add(1, Ordering::Relaxed);
                 break;
+            }
+            let mut payload = Vec::with_capacity(payload_len.min(READ_CHUNK));
+            match (&mut reader)
+                .take(payload_len as u64)
+                .read_to_end(&mut payload)
+                .await
+            {
+                Ok(n) if n == payload_len => {}
+                Ok(_) => {
+                    error!("Failed to read payload: the stream ended inside a frame");
+                    break;
+                }
+                Err(e) => {
+                    error!("Failed to read payload: {}", e);
+                    break;
+                }
             }
 
             debug!("Received multiplexed response {}", request_id);

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-11-12
+
+### Security
+- `service::multiplex::Multiplexer` allocated whatever payload length a peer declared before reading any of it, so a 12-byte frame asked for 4 GiB, and the process aborted where the allocation failed. The declared length is now checked against a limit before any memory is reserved, and the payload buffer grows only as bytes arrive. The limit is `MAX_PAYLOAD_SIZE` (16 MiB) by default; `Multiplexer::new_with_max_frame_size` sets another. A frame over the limit ends the receive loop, and a request whose payload is over it fails with `ProtocolError::OversizedPacket` without being sent (it was truncated to 32 bits before).
+- The built-in encrypted transport (the X25519 handshake, then ChaCha20-Poly1305) authenticates neither side and has no replay protection within a session, which the README, `THREAT_MODEL.md` and the crate docs did not say. They now carry a warning: use it only inside an authenticated TLS channel, never on its own across an untrusted network. The default `Client` and `service::daemon` paths use that handshake. Fixing it needs a new handshake and wire format, planned for 2.0.
+
+### Changed
+- Removed the unused dependencies `rand_chacha`, `tokio-stream` and `tracing-futures`. `rand` is now a dev-dependency (only the tests use it). tokio's `time` feature, which the crate uses and which `tokio-stream` used to turn on, is now requested directly.
+
 ## [1.3.0] - 2026-10-09
 
 A review of every TLS, transport and server setting for values that were accepted and then ignored, or that failed open. Each one found is fixed below. Settings that cannot do what they say without a new design are deprecated, so the compiler now tells you they have no effect.
@@ -354,7 +363,8 @@ Performance-focused release with adaptive compression, buffer pooling, zero-allo
 - Cross-platform CI testing workflow
 
 
-[Unreleased]: https://github.com/jamesgober/network-protocol/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/jamesgober/network-protocol/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/jamesgober/network-protocol/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/jamesgober/network-protocol/compare/v1.2.4...v1.3.0
 [1.2.4]: https://github.com/jamesgober/network-protocol/compare/v1.2.3...v1.2.4
 [1.2.3]: https://github.com/jamesgober/network-protocol/compare/v1.2.2...v1.2.3

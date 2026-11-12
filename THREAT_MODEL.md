@@ -1,5 +1,21 @@
 # Threat Model
 
+> [!WARNING]
+> **Use the built-in encrypted transport only inside TLS.** The built-in
+> handshake (an X25519 key exchange, then ChaCha20-Poly1305) authenticates
+> neither side, and it has no replay protection. It does not protect traffic
+> from anyone who can intercept, change, or replay it on the network path.
+> Use it only inside an authenticated TLS channel (the TLS transport with
+> certificate verification on), and never on its own across a network you do
+> not trust. This affects the default `Client` and `service::daemon` paths,
+> which use that handshake. An authenticated key exchange with replay
+> protection is planned for 2.0.
+
+Where this document lists the built-in handshake as a mitigation against
+interception, modification, or replay by a network adversary, read it with
+the warning above: it holds only when the built-in transport runs inside an
+authenticated TLS channel.
+
 ## Overview
 
 This document outlines the security threat model for the network-protocol library, identifying potential threats, attack vectors, and implemented mitigations.
