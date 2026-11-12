@@ -20,13 +20,24 @@
     Designed for <strong>zero-compromise reliability</strong> in high-load environments with built-in backpressure control, automatic connection health monitoring, and graceful degradation. The fastest, most efficient version yet with v1.2.1 delivering measurable performance gains through connection pooling, request multiplexing, adaptive compression, and zero-allocation optimizations.
 </p>
 
+> [!WARNING]
+> **Use the built-in encrypted transport only inside TLS.** The built-in
+> handshake (an X25519 key exchange, then ChaCha20-Poly1305) authenticates
+> neither side, and it has no replay protection. It does not protect traffic
+> from anyone who can intercept, change, or replay it on the network path.
+> Use it only inside an authenticated TLS channel (the TLS transport with
+> certificate verification on), and never on its own across a network you do
+> not trust. This affects the default `Client` and `service::daemon` paths,
+> which use that handshake. An authenticated key exchange with replay
+> protection is planned for 2.0.
+
 ## Security Guarantees
 
 ### 🔒 Cryptographic Protections
 - **Modern Encryption**: ChaCha20-Poly1305 AEAD or TLS 1.2+/1.3 (no legacy ciphers)
-- **Key Exchange**: X25519 ECDH with per-session ephemeral keys
-- **Forward Secrecy**: Session keys never persist, automatic key rotation
-- **Replay Protection**: Nonce tracking (10,000 per session) + timestamp validation (±5s window)
+- **Key Exchange**: X25519 ECDH with per-session ephemeral keys. It is not authenticated: see the warning above
+- **Forward Secrecy**: Session keys never persist (no key rotation within a session)
+- **Replay Protection**: None within a session of the built-in encrypted transport: see the warning above. TLS provides its own
 - **Authentication**: Mutual TLS support, certificate pinning available
 
 ### 🛡️ DoS/Memory Protections
@@ -60,7 +71,7 @@
 - TLS transport with client/server implementations and mutual authentication (`mTLS`)
 - Certificate pinning for enhanced security in TLS connections
 - Self-signed certificate generation capability for development environments
-- Protection against replay attacks using timestamps and nonce verification
+- Handshake messages carry timestamps and nonces, but the built-in encrypted transport has no replay protection within a session (see the warning above)
 
 ### Performance & Reliability
 - Advanced backpressure mechanism to prevent server overload from slow clients

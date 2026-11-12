@@ -1,7 +1,18 @@
 //! Secure handshake protocol implementation using Elliptic Curve Diffie-Hellman (ECDH)
 //!
-//! This module implements a secure cryptographic handshake based on x25519-dalek
-//! with protection against replay attacks using timestamped nonces.
+//! This module implements a cryptographic handshake based on x25519-dalek,
+//! with timestamped nonces.
+//!
+//! # Security
+//!
+//! **This handshake authenticates neither side, and the session it sets up has
+//! no replay protection.** Neither peer proves who it is: there is no
+//! long-term key, certificate, pre-shared key, or pinned public key, and the
+//! nonce checks prove nothing about the peer. It does not protect traffic from
+//! anyone who can intercept, change, or replay it on the network path. Use it
+//! only inside an authenticated TLS channel, and never on its own across a
+//! network you do not trust. An authenticated key exchange with replay
+//! protection is planned for 2.0.
 //!
 //! **Key Change: Per-Session State**
 //! Instead of global singletons, handshake state is now managed through session-scoped
